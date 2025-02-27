@@ -1,0 +1,9 @@
+[package]
+name = "qmk_notifier"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = "4.5.31"
+hidapi = "2.4.1"
+
