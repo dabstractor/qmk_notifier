@@ -1,5 +1,8 @@
 // qmk_notifier/src/main.rs
 fn main() {
-    // Pass the command-line arguments to the core logic.
-    qmk_notifier::run(None);
+    // Call the run function and handle any errors
+    if let Err(e) = qmk_notifier::run(None) {
+        eprintln!("Error: {}", e);
+        // std::process::exit(1);
+    }
 }

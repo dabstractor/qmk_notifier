@@ -1,33 +1,27 @@
-use hidapi::{HidApi, HidDevice, HidError};
-//
+use crate::error::QmkError;
+use hidapi::{HidApi, HidDevice};
+
 // Default constants
 pub const DEFAULT_VENDOR_ID: u16 = 0xFEED;
 pub const DEFAULT_PRODUCT_ID: u16 = 0x0000;
 const USAGE_PAGE: u16 = 0xFF60;
 const USAGE: u16 = 0x61;
 pub const REPORT_LENGTH: usize = 32;
-use std::process;
 
-pub fn parse_hex_or_decimal(input: &str) -> Result<u16, String> {
+pub fn parse_hex_or_decimal(input: &str) -> Result<u16, QmkError> {
     if input.starts_with("0x") || input.starts_with("0X") {
         // Parse as hexadecimal
-        u16::from_str_radix(&input[2..], 16).map_err(|e| format!("Invalid hex value: {}", e))
+        u16::from_str_radix(&input[2..], 16).map_err(|e| QmkError::InvalidHexValue(e.to_string()))
     } else {
         // Parse as decimal
         input
             .parse::<u16>()
-            .map_err(|e| format!("Invalid decimal value: {}", e))
+            .map_err(|e| QmkError::InvalidDecimalValue(e.to_string()))
     }
 }
 
-pub fn list_hid_devices() {
-    let api = match HidApi::new() {
-        Ok(api) => api,
-        Err(e) => {
-            eprintln!("Error initializing HID API: {}", e);
-            process::exit(1);
-        }
-    };
+pub fn list_hid_devices() -> Result<(), QmkError> {
+    let api = HidApi::new().map_err(|e| QmkError::HidApiInitError(e.to_string()))?;
 
     println!("Available HID devices:");
     for device in api.device_list() {
@@ -56,6 +50,8 @@ pub fn list_hid_devices() {
         }
         println!();
     }
+
+    Ok(())
 }
 
 pub fn send_raw_report(
@@ -63,42 +59,65 @@ pub fn send_raw_report(
     vendor_id: u16,
     product_id: u16,
     verbose: bool,
-) -> Result<(), HidError> {
-    let interface = match get_raw_hid_interface(vendor_id, product_id) {
-        Some(interface) => interface,
-        None => {
-            eprintln!(
-                "No device found with VID: 0x{:04X}, PID: 0x{:04X}",
-                vendor_id, product_id
-            );
-            process::exit(1);
-        }
-    };
+) -> Result<(), QmkError> {
+    let interface = get_raw_hid_interface(vendor_id, product_id)?;
 
-    let mut request_data = vec![0u8; REPORT_LENGTH + 1]; // First byte is Report ID
-    for (i, &byte) in data.iter().enumerate().take(REPORT_LENGTH) {
-        request_data[i + 1] = byte;
+    const MAX_BATCHES: usize = 8;
+    const MAX_DATA_SIZE: usize = MAX_BATCHES * REPORT_LENGTH;
+
+    if data.len() > MAX_DATA_SIZE {
+        return Err(QmkError::InputTooLong(data.len(), MAX_DATA_SIZE));
     }
+
+    // Calculate number of batches needed (rounded up)
+    let batch_count = (data.len() + REPORT_LENGTH - 1) / REPORT_LENGTH;
 
     if verbose {
-        println!("Request data:");
-        println!("{:?}", request_data);
+        println!("Request data ({} bytes):", data.len());
+        println!("{:?}", data);
     }
 
-    match interface.write(&request_data) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e),
+    for batch in 0..batch_count {
+        let start_idx = batch * REPORT_LENGTH;
+        let end_idx = (start_idx + REPORT_LENGTH).min(data.len());
+        let batch_data = &data[start_idx..end_idx];
+
+        let mut request_data = vec![0u8; REPORT_LENGTH + 1]; // First byte is Report ID
+        for (i, &byte) in batch_data.iter().enumerate() {
+            request_data[i + 1] = byte;
+        }
+
+        if verbose {
+            println!("Sending batch {}/{}", batch + 1, batch_count);
+            println!("{:?}", request_data);
+        }
+
+        // Send the data
+        interface.write(&request_data)?;
+
+        // Wait for response or acknowledgment
+        let mut response_buffer = vec![0u8; REPORT_LENGTH + 1];
+        match interface.read_timeout(&mut response_buffer, 100) {
+            Ok(size) => {
+                if verbose {
+                    println!("Received response ({} bytes):", size);
+                    println!("{:?}", &response_buffer[..size]);
+                }
+            }
+            Err(e) => {
+                if verbose {
+                    println!("No response received: {}", e);
+                }
+                // Continue anyway, some devices might not send responses
+            }
+        }
     }
+
+    Ok(())
 }
 
-fn get_raw_hid_interface(vendor_id: u16, product_id: u16) -> Option<HidDevice> {
-    let api = match HidApi::new() {
-        Ok(api) => api,
-        Err(e) => {
-            eprintln!("Error initializing HID API: {}", e);
-            return None;
-        }
-    };
+fn get_raw_hid_interface(vendor_id: u16, product_id: u16) -> Result<HidDevice, QmkError> {
+    let api = HidApi::new().map_err(|e| QmkError::HidApiInitError(e.to_string()))?;
 
     // Use iter() to create an iterator over the device list
     let raw_hid_interface = api.device_list().find(|d| {
@@ -109,13 +128,9 @@ fn get_raw_hid_interface(vendor_id: u16, product_id: u16) -> Option<HidDevice> {
     });
 
     match raw_hid_interface {
-        Some(interface_info) => match interface_info.open_device(&api) {
-            Ok(device) => Some(device),
-            Err(e) => {
-                eprintln!("Error opening device: {}", e);
-                None
-            }
-        },
-        None => None,
+        Some(interface_info) => interface_info
+            .open_device(&api)
+            .map_err(|e| QmkError::DeviceOpenError(e.to_string())),
+        None => Err(QmkError::DeviceNotFound(vendor_id, product_id)),
     }
 }

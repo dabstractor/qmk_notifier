@@ -1,16 +1,19 @@
 mod core;
-use core::{
+pub use core::{
     list_hid_devices, parse_hex_or_decimal, send_raw_report, DEFAULT_PRODUCT_ID, DEFAULT_VENDOR_ID,
     REPORT_LENGTH,
 };
 
 use clap::{Arg, ArgAction, Command};
-use std::process;
+
+// Export our error type
+mod error;
+pub use error::QmkError;
 
 /// Core function that executes the notifier logic.
 /// It can be called either with Some(command) for programmatic use,
 /// or with None to parse command-line arguments.
-pub fn run(command: Option<String>) {
+pub fn run(command: Option<String>) -> Result<(), QmkError> {
     let args: Vec<String> = if command.is_some() {
         // If command is provided, create minimal args vector with just the command
         vec!["qmk_notifiertool".to_string(), command.unwrap()]
@@ -69,28 +72,19 @@ pub fn run(command: Option<String>) {
     let matches = cmd.get_matches_from(args);
 
     if matches.get_flag("list") {
-        list_hid_devices();
-        return;
+        return list_hid_devices();
     }
 
     let vendor_id = matches
         .get_one::<String>("vendor-id")
-        .map(|vid| {
-            parse_hex_or_decimal(vid).unwrap_or_else(|e| {
-                eprintln!("Error: {}", e);
-                process::exit(1);
-            })
-        })
+        .map(|vid| parse_hex_or_decimal(vid))
+        .transpose()?
         .unwrap_or(DEFAULT_VENDOR_ID);
 
     let product_id = matches
         .get_one::<String>("product-id")
-        .map(|pid| {
-            parse_hex_or_decimal(pid).unwrap_or_else(|e| {
-                eprintln!("Error: {}", e);
-                process::exit(1);
-            })
-        })
+        .map(|pid| parse_hex_or_decimal(pid))
+        .transpose()?
         .unwrap_or(DEFAULT_PRODUCT_ID);
 
     let verbose = matches.get_flag("verbose");
@@ -100,7 +94,7 @@ pub fn run(command: Option<String>) {
     } else {
         cmd_for_help.print_help().expect("Failed to display help");
         println!();
-        return;
+        return Ok(());
     };
 
     if verbose {
@@ -109,16 +103,19 @@ pub fn run(command: Option<String>) {
 
     let input = message.as_bytes();
 
-    if input.len() > REPORT_LENGTH {
-        eprintln!(
-            "Error: Input string exceeds maximum length of {} bytes",
-            REPORT_LENGTH
+    // Ensure proper message termination by creating a new buffer
+    // with enough space for the message and explicit ETX terminator (0x03)
+    let mut input_with_terminator = Vec::with_capacity(input.len() + 1);
+    input_with_terminator.extend_from_slice(input);
+    input_with_terminator.push(0x03); // Add ETX (End of Text) character as terminator
+
+    if verbose {
+        println!(
+            "Message length: {} bytes (including ETX terminator)",
+            input_with_terminator.len()
         );
-        process::exit(1);
     }
 
-    if let Err(e) = send_raw_report(input, vendor_id, product_id, verbose) {
-        eprintln!("Error sending report: {}", e);
-        process::exit(1);
-    }
+    // Send the report with improved timing and response handling
+    send_raw_report(&input_with_terminator, vendor_id, product_id, verbose)
 }
