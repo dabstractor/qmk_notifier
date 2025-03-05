@@ -63,14 +63,14 @@ pub fn send_raw_report(
     let interface = get_raw_hid_interface(vendor_id, product_id)?;
 
     const MAX_BATCHES: usize = 8;
-    const MAX_DATA_SIZE: usize = MAX_BATCHES * REPORT_LENGTH;
+    const MAX_DATA_SIZE: usize = MAX_BATCHES * (REPORT_LENGTH - 2);
 
     if data.len() > MAX_DATA_SIZE {
         return Err(QmkError::InputTooLong(data.len(), MAX_DATA_SIZE));
     }
 
     // Calculate number of batches needed (rounded up)
-    let batch_count = (data.len() + REPORT_LENGTH - 1) / REPORT_LENGTH;
+    let batch_count = (data.len() + REPORT_LENGTH - 3) / (REPORT_LENGTH - 2);
 
     if verbose {
         println!("Request data ({} bytes):", data.len());
@@ -78,13 +78,16 @@ pub fn send_raw_report(
     }
 
     for batch in 0..batch_count {
-        let start_idx = batch * REPORT_LENGTH;
-        let end_idx = (start_idx + REPORT_LENGTH).min(data.len());
+        let start_idx = batch * (REPORT_LENGTH - 2);
+        let end_idx = (start_idx + (REPORT_LENGTH - 2)).min(data.len());
         let batch_data = &data[start_idx..end_idx];
 
         let mut request_data = vec![0u8; REPORT_LENGTH + 1]; // First byte is Report ID
-        for (i, &byte) in batch_data.iter().enumerate() {
-            request_data[i + 1] = byte;
+        request_data[1] = 0x81;
+        request_data[2] = 0x9F;
+        // Copy batch_data into the appropriate position
+        if !batch_data.is_empty() {
+            request_data[3..3+batch_data.len()].copy_from_slice(batch_data);
         }
 
         if verbose {
