@@ -1,8 +1,11 @@
 mod core;
 pub use core::{
-    list_hid_devices, parse_hex_or_decimal, send_raw_report, DEFAULT_PRODUCT_ID, DEFAULT_VENDOR_ID,
-    REPORT_LENGTH,
+    list_hid_devices, parse_hex_or_decimal, send_raw_report, DEFAULT_PRODUCT_ID, DEFAULT_USAGE,
+    DEFAULT_USAGE_PAGE, DEFAULT_VENDOR_ID, REPORT_LENGTH,
 };
+
+mod config;
+pub use config::{create_example_config, Config};
 
 use clap::{Arg, ArgAction, Command};
 
@@ -52,6 +55,22 @@ pub fn run(command: Option<String>) -> Result<(), QmkError> {
                 .value_parser(clap::value_parser!(String)),
         )
         .arg(
+            Arg::new("usage-page")
+                .short('u')
+                .long("usage-page")
+                .value_name("USAGE_PAGE")
+                .help("HID usage page (decimal or 0xHEX format)")
+                .value_parser(clap::value_parser!(String)),
+        )
+        .arg(
+            Arg::new("usage")
+                .short('a')
+                .long("usage")
+                .value_name("USAGE")
+                .help("HID usage (decimal or 0xHEX format)")
+                .value_parser(clap::value_parser!(String)),
+        )
+        .arg(
             Arg::new("verbose")
                 .short('v')
                 .long("verbose")
@@ -64,6 +83,13 @@ pub fn run(command: Option<String>) -> Result<(), QmkError> {
                 .long("list")
                 .help("List all HID devices")
                 .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("create-config")
+                .short('c')
+                .long("create-config")
+                .help("Create example configuration file")
+                .action(ArgAction::SetTrue),
         );
 
     // Clone for help display if needed
@@ -75,19 +101,40 @@ pub fn run(command: Option<String>) -> Result<(), QmkError> {
         return list_hid_devices();
     }
 
+    if matches.get_flag("create-config") {
+        create_example_config()?;
+        return Ok(());
+    }
+
+    // Load the config file (defaults applied if file doesn't exist)
+    let config = Config::load();
+
+    // Command-line arguments override config file values
     let vendor_id = matches
         .get_one::<String>("vendor-id")
         .map(|vid| parse_hex_or_decimal(vid))
         .transpose()?
-        .unwrap_or(DEFAULT_VENDOR_ID);
+        .unwrap_or(config.vendor_id);
 
     let product_id = matches
         .get_one::<String>("product-id")
         .map(|pid| parse_hex_or_decimal(pid))
         .transpose()?
-        .unwrap_or(DEFAULT_PRODUCT_ID);
+        .unwrap_or(config.product_id);
 
-    let verbose = matches.get_flag("verbose");
+    let usage_page = matches
+        .get_one::<String>("usage-page")
+        .map(|up| parse_hex_or_decimal(up))
+        .transpose()?
+        .unwrap_or(config.usage_page);
+
+    let usage = matches
+        .get_one::<String>("usage")
+        .map(|u| parse_hex_or_decimal(u))
+        .transpose()?
+        .unwrap_or(config.usage);
+
+    let verbose = matches.get_flag("verbose") || config.verbose;
 
     let message = if let Some(msg) = matches.get_one::<String>("message") {
         msg.to_string()
@@ -99,6 +146,10 @@ pub fn run(command: Option<String>) -> Result<(), QmkError> {
 
     if verbose {
         println!("Using VID: 0x{:04X}, PID: 0x{:04X}", vendor_id, product_id);
+        println!(
+            "Using Usage Page: 0x{:04X}, Usage: 0x{:04X}",
+            usage_page, usage
+        );
     }
 
     let input = message.as_bytes();
@@ -117,5 +168,12 @@ pub fn run(command: Option<String>) -> Result<(), QmkError> {
     }
 
     // Send the report with improved timing and response handling
-    send_raw_report(&input_with_terminator, vendor_id, product_id, verbose)
+    send_raw_report(
+        &input_with_terminator,
+        vendor_id,
+        product_id,
+        usage_page,
+        usage,
+        verbose,
+    )
 }

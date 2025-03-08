@@ -4,8 +4,8 @@ use hidapi::{HidApi, HidDevice};
 // Default constants
 pub const DEFAULT_VENDOR_ID: u16 = 0xFEED;
 pub const DEFAULT_PRODUCT_ID: u16 = 0x0000;
-const USAGE_PAGE: u16 = 0xFF60;
-const USAGE: u16 = 0x61;
+pub const DEFAULT_USAGE_PAGE: u16 = 0xFF60;
+pub const DEFAULT_USAGE: u16 = 0x61;
 pub const REPORT_LENGTH: usize = 32;
 
 pub fn parse_hex_or_decimal(input: &str) -> Result<u16, QmkError> {
@@ -58,9 +58,11 @@ pub fn send_raw_report(
     data: &[u8],
     vendor_id: u16,
     product_id: u16,
+    usage_page: u16,
+    usage: u16,
     verbose: bool,
 ) -> Result<(), QmkError> {
-    let interface = get_raw_hid_interface(vendor_id, product_id)?;
+    let interface = get_raw_hid_interface(vendor_id, product_id, usage_page, usage)?;
 
     const MAX_BATCHES: usize = 8;
     const MAX_DATA_SIZE: usize = MAX_BATCHES * (REPORT_LENGTH - 2);
@@ -87,7 +89,7 @@ pub fn send_raw_report(
         request_data[2] = 0x9F;
         // Copy batch_data into the appropriate position
         if !batch_data.is_empty() {
-            request_data[3..3+batch_data.len()].copy_from_slice(batch_data);
+            request_data[3..3 + batch_data.len()].copy_from_slice(batch_data);
         }
 
         if verbose {
@@ -119,21 +121,28 @@ pub fn send_raw_report(
     Ok(())
 }
 
-fn get_raw_hid_interface(vendor_id: u16, product_id: u16) -> Result<HidDevice, QmkError> {
+fn get_raw_hid_interface(
+    vendor_id: u16,
+    product_id: u16,
+    usage_page: u16,
+    usage: u16,
+) -> Result<HidDevice, QmkError> {
     let api = HidApi::new().map_err(|e| QmkError::HidApiInitError(e.to_string()))?;
 
     // Use iter() to create an iterator over the device list
     let raw_hid_interface = api.device_list().find(|d| {
         d.vendor_id() == vendor_id
             && d.product_id() == product_id
-            && d.usage_page() == USAGE_PAGE
-            && d.usage() == USAGE
+            && d.usage_page() == usage_page
+            && d.usage() == usage
     });
 
     match raw_hid_interface {
         Some(interface_info) => interface_info
             .open_device(&api)
             .map_err(|e| QmkError::DeviceOpenError(e.to_string())),
-        None => Err(QmkError::DeviceNotFound(vendor_id, product_id)),
+        None => Err(QmkError::DeviceNotFound(
+            vendor_id, product_id, usage_page, usage,
+        )),
     }
 }

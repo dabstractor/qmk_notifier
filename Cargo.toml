@@ -6,4 +6,7 @@ edition = "2021"
 [dependencies]
 clap = "4.5.31"
 hidapi = "2.4.1"
+toml = "0.8.10"
+dirs = "5.0.1"
+serde = { version = "1.0", features = ["derive"] }
 
