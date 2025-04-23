@@ -8,7 +8,6 @@ pub enum QmkError {
     DeviceOpenError(String),
     InvalidHexValue(String),
     InvalidDecimalValue(String),
-    InputTooLong(usize, usize),
     SendReportError(HidError),
     ConfigError(String),
     ConfigReadError(String, String),
@@ -28,11 +27,6 @@ impl fmt::Display for QmkError {
             QmkError::DeviceOpenError(e) => write!(f, "Error opening device: {}", e),
             QmkError::InvalidHexValue(e) => write!(f, "Invalid hex value: {}", e),
             QmkError::InvalidDecimalValue(e) => write!(f, "Invalid decimal value: {}", e),
-            QmkError::InputTooLong(input, max) => write!(
-                f,
-                "Input string exceeds maximum length of {} bytes (got {} bytes)",
-                max, input
-            ),
             QmkError::SendReportError(e) => write!(f, "Error sending report: {}", e),
             QmkError::ConfigError(e) => write!(f, "Configuration error: {}", e),
             QmkError::ConfigReadError(path, e) => write!(f, "Error reading config file {}: {}", path, e),

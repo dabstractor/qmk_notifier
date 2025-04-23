@@ -64,13 +64,6 @@ pub fn send_raw_report(
 ) -> Result<(), QmkError> {
     let interface = get_raw_hid_interface(vendor_id, product_id, usage_page, usage)?;
 
-    const MAX_BATCHES: usize = 8;
-    const MAX_DATA_SIZE: usize = MAX_BATCHES * (REPORT_LENGTH - 2);
-
-    if data.len() > MAX_DATA_SIZE {
-        return Err(QmkError::InputTooLong(data.len(), MAX_DATA_SIZE));
-    }
-
     // Calculate number of batches needed (rounded up)
     let batch_count = (data.len() + REPORT_LENGTH - 3) / (REPORT_LENGTH - 2);
 
