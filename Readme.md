@@ -46,36 +46,72 @@ brew install hidapi
 
 ## Usage
 
+All HID parameters are now required and must be provided explicitly:
+
 ```bash
-# Send a message to your keyboard
-qmk_notifier "your_message_here"
+# Send a message to your keyboard (all parameters required)
+qmk_notifier --vendor-id 0xFEED --product-id 0x0000 --usage-page 0xFF60 --usage 0x61 "your_message_here"
 
 # List all connected HID devices
-qmk_notifier --list
-
-# Send a message with a specific vendor/product ID
-qmk_notifier --vendor-id 0xFEED --product-id 0x6060 "your_message_here"
+qmk_notifier --vendor-id 0xFEED --product-id 0x0000 --usage-page 0xFF60 --usage 0x61 --list
 
 # Enable verbose output
-qmk_notifier --verbose "your_message_here"
+qmk_notifier --vendor-id 0xFEED --product-id 0x0000 --usage-page 0xFF60 --usage 0x61 --verbose "your_message_here"
 ```
 
 ## Command Line Options
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `message` | | Message to send to keyboard (positional argument) |
-| `--vendor-id` | `-i` | USB vendor ID in decimal or hex format (e.g., `1234` or `0x04D9`) |
-| `--product-id` | `-p` | USB product ID in decimal or hex format (e.g., `5678` or `0x0141`) |
-| `--verbose` | `-v` | Enable verbose output for debugging |
-| `--list` | `-l` | List all available HID devices |
-| `--help` | | Display help information |
+| Option | Short | Required | Description |
+|--------|-------|----------|-------------|
+| `message` | | No* | Message to send to keyboard (positional argument) |
+| `--vendor-id` | `-i` | Yes | USB vendor ID in decimal or hex format (e.g., `65261` or `0xFEED`) |
+| `--product-id` | `-p` | Yes | USB product ID in decimal or hex format (e.g., `0` or `0x0000`) |
+| `--usage-page` | `-u` | Yes | HID usage page in decimal or hex format (e.g., `65376` or `0xFF60`) |
+| `--usage` | `-a` | Yes | HID usage in decimal or hex format (e.g., `97` or `0x61`) |
+| `--verbose` | `-v` | No | Enable verbose output for debugging |
+| `--list` | `-l` | No | List all available HID devices |
+| `--help` | | No | Display help information |
 
-## Default Values
+*Either `message` or `--list` must be provided.
 
-- Vendor ID: `0xFEED`
-- Product ID: `0x0000`
+## Default Reference Values
+
+These values are commonly used for QMK keyboards but must be provided explicitly:
+- Vendor ID: `0xFEED` (65261 decimal)
+- Product ID: `0x0000` (0 decimal)
+- Usage Page: `0xFF60` (65376 decimal)
+- Usage: `0x61` (97 decimal)
 - Messages are automatically terminated with ETX (End of Text, `0x03`) character
+
+## Programmatic Usage
+
+This package can also be used as a library in other Rust projects:
+
+```rust
+use qmk_notifier::{RunParameters, RunCommand, run};
+
+// Send a message
+let params = RunParameters::new(
+    RunCommand::SendMessage("Hello keyboard!".to_string()),
+    0xFEED,  // vendor_id
+    0x0000,  // product_id
+    0xFF60,  // usage_page
+    0x61,    // usage
+    false    // verbose
+);
+
+match run(params) {
+    Ok(()) => println!("Message sent successfully"),
+    Err(e) => eprintln!("Error: {}", e),
+}
+
+// List devices
+let list_params = RunParameters::new(
+    RunCommand::ListDevices,
+    0xFEED, 0x0000, 0xFF60, 0x61, true
+);
+run(list_params)?;
+```
 
 ## Technical Details
 

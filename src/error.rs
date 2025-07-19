@@ -9,10 +9,8 @@ pub enum QmkError {
     InvalidHexValue(String),
     InvalidDecimalValue(String),
     SendReportError(HidError),
-    ConfigError(String),
-    ConfigReadError(String, String),
-    ConfigParseError(String, String),
-    ConfigWriteError(String, String),
+    MissingRequiredParameter(String),
+    RemovedFeature(String),
 }
 
 impl fmt::Display for QmkError {
@@ -28,10 +26,8 @@ impl fmt::Display for QmkError {
             QmkError::InvalidHexValue(e) => write!(f, "Invalid hex value: {}", e),
             QmkError::InvalidDecimalValue(e) => write!(f, "Invalid decimal value: {}", e),
             QmkError::SendReportError(e) => write!(f, "Error sending report: {}", e),
-            QmkError::ConfigError(e) => write!(f, "Configuration error: {}", e),
-            QmkError::ConfigReadError(path, e) => write!(f, "Error reading config file {}: {}", path, e),
-            QmkError::ConfigParseError(path, e) => write!(f, "Error parsing config file {}: {}", path, e),
-            QmkError::ConfigWriteError(path, e) => write!(f, "Error writing config file {}: {}", path, e),
+            QmkError::MissingRequiredParameter(param) => write!(f, "Missing required parameter: {}", param),
+            QmkError::RemovedFeature(feature) => write!(f, "Feature removed: {}", feature),
         }
     }
 }
