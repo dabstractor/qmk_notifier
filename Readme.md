@@ -110,6 +110,15 @@ For more details on QMK Raw HID functionality, see the [official QMK RawHID docu
 
 The pattern matching is optimized for keyboard firmware, but complex patterns and large numbers of rules may impact performance. Keep your rule definitions concise for best results.
 
+## Running Tests
+
+To run the pattern matching tests:
+
+```bash
+gcc test_pattern_match.c pattern_match.c -o test_pattern_match
+./test_pattern_match
+```
+
 ---
 
 ## Contributing
