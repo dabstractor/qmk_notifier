@@ -8,6 +8,33 @@
 #include "print.h"
 #endif
 
+// Function to sanitize strings by removing non-ASCII characters
+// This prevents Unicode decode errors when the data is processed by the Python CLI
+static void sanitize_string(char *str) {
+    if (!str) return;
+    
+    char *read_ptr = str;
+    char *write_ptr = str;
+    
+    while (*read_ptr) {
+        // Only allow printable ASCII characters (32-126) and essential control characters (9, 10, 13)
+        // Also allow our delimiter and terminator characters
+        if ((*read_ptr >= 32 && *read_ptr <= 126) || 
+            *read_ptr == 9 ||   // tab
+            *read_ptr == 10 ||  // newline
+            *read_ptr == 13 ||  // carriage return
+            *read_ptr == GS_DELIMITER[0] ||  // group separator (our delimiter)
+            *read_ptr == ETX_TERMINATOR[0]) { // end of text (our terminator)
+            *write_ptr++ = *read_ptr;
+        }
+        // Skip non-ASCII characters (values > 127) and other control characters
+        read_ptr++;
+    }
+    
+    // Null terminate the sanitized string
+    *write_ptr = '\0';
+}
+
 // Maximum size for the assembled command.
 #define MSG_BUFFER_SIZE 256
 // Buffer to accumulate incoming data.
@@ -288,6 +315,10 @@ void hid_notify(uint8_t *data, uint8_t length) {
         // End of text (ASCII 3) indicates the end of the message.
         if (c == ETX_TERMINATOR[0]) {
             msg_buffer[msg_index] = '\0'; // Ensure the buffer is properly terminated
+            
+            // Sanitize the buffer to remove non-ASCII characters that could cause decode errors
+            sanitize_string(msg_buffer);
+            
             msg_index = 0; // Reset the buffer for the next message
             match = process_full_message(msg_buffer);
             break;
