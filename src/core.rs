@@ -10,10 +10,8 @@ pub const REPORT_LENGTH: usize = 32;
 
 pub fn parse_hex_or_decimal(input: &str) -> Result<u16, QmkError> {
     if input.starts_with("0x") || input.starts_with("0X") {
-        // Parse as hexadecimal
         u16::from_str_radix(&input[2..], 16).map_err(|e| QmkError::InvalidHexValue(e.to_string()))
     } else {
-        // Parse as decimal
         input
             .parse::<u16>()
             .map_err(|e| QmkError::InvalidDecimalValue(e.to_string()))
@@ -34,7 +32,6 @@ pub fn list_hid_devices() -> Result<(), QmkError> {
             device.path()
         );
 
-        // Try to get the product and manufacturer strings
         match device.open_device(&api) {
             Ok(opened_device) => {
                 if let Ok(Some(manufacturer)) = opened_device.get_manufacturer_string() {
@@ -62,80 +59,147 @@ pub fn send_raw_report(
     usage: u16,
     verbose: bool,
 ) -> Result<(), QmkError> {
-    let interface = get_raw_hid_interface(vendor_id, product_id, usage_page, usage)?;
-
-    // Calculate number of batches needed (rounded up)
-    let batch_count = (data.len() + REPORT_LENGTH - 3) / (REPORT_LENGTH - 2);
+    let interfaces = get_raw_hid_interfaces(vendor_id, product_id, usage_page, usage)?;
+    let mut successful_sends = 0;
 
     if verbose {
-        println!("Request data ({} bytes):", data.len());
-        println!("{:?}", data);
+        println!("Found {} matching devices.", interfaces.len());
     }
 
-    for batch in 0..batch_count {
-        let start_idx = batch * (REPORT_LENGTH - 2);
-        let end_idx = (start_idx + (REPORT_LENGTH - 2)).min(data.len());
-        let batch_data = &data[start_idx..end_idx];
-
-        let mut request_data = vec![0u8; REPORT_LENGTH + 1]; // First byte is Report ID
-        request_data[1] = 0x81;
-        request_data[2] = 0x9F;
-        // Copy batch_data into the appropriate position
-        if !batch_data.is_empty() {
-            request_data[3..3 + batch_data.len()].copy_from_slice(batch_data);
+    for (device_idx, interface) in interfaces.iter().enumerate() {
+        if verbose {
+            let device_path = match interface.get_device_info() {
+                Ok(info) => format!("{:?}", info.path()),
+                Err(_) => "N/A".to_string(),
+            };
+            println!(
+                "Sending to device {}/{}: Path: {}",
+                device_idx + 1,
+                interfaces.len(),
+                device_path
+            );
         }
+
+        let batch_count = (data.len() + REPORT_LENGTH - 3) / (REPORT_LENGTH - 2);
 
         if verbose {
-            println!("Sending batch {}/{}", batch + 1, batch_count);
-            println!("{:?}", request_data);
+            println!("Request data ({} bytes):", data.len());
+            println!("{:?}", data);
         }
 
-        // Send the data
-        interface.write(&request_data)?;
+        let mut batch_errors = Vec::new();
 
-        // Wait for response or acknowledgment
-        let mut response_buffer = vec![0u8; REPORT_LENGTH + 1];
-        match interface.read_timeout(&mut response_buffer, 100) {
-            Ok(size) => {
+        for batch in 0..batch_count {
+            let start_idx = batch * (REPORT_LENGTH - 2);
+            let end_idx = (start_idx + (REPORT_LENGTH - 2)).min(data.len());
+            let batch_data = &data[start_idx..end_idx];
+
+            let mut request_data = vec![0u8; REPORT_LENGTH + 1];
+            request_data[1] = 0x81;
+            request_data[2] = 0x9F;
+
+            if !batch_data.is_empty() {
+                request_data[3..3 + batch_data.len()].copy_from_slice(batch_data);
+            }
+
+            if verbose {
+                println!("Sending batch {}/{}", batch + 1, batch_count);
+                println!("{:?}", request_data);
+            }
+
+            if let Err(e) = interface.write(&request_data) {
+                let error_msg = format!("Error on batch {}: {}", batch + 1, e);
+                batch_errors.push(error_msg);
                 if verbose {
-                    println!("Received response ({} bytes):", size);
-                    println!("{:?}", &response_buffer[..size]);
+                    println!("{}", e);
+                }
+                break; 
+            }
+
+            let mut response_buffer = vec![0u8; REPORT_LENGTH + 1];
+            match interface.read_timeout(&mut response_buffer, 100) {
+                Ok(size) => {
+                    if verbose {
+                        println!("Received response ({} bytes):", size);
+                        println!("{:?}", &response_buffer[..size]);
+                    }
+                }
+                Err(e) => {
+                    if verbose {
+                        println!("No response for batch {}: {}", batch + 1, e);
+                    }
                 }
             }
-            Err(e) => {
-                if verbose {
-                    println!("No response received: {}", e);
-                }
-                // Continue anyway, some devices might not send responses
+        }
+
+        if batch_errors.is_empty() {
+            successful_sends += 1;
+        } else {
+            if verbose {
+                println!("Failed to send message to a device: {:?}", batch_errors);
             }
         }
     }
 
-    Ok(())
+    if successful_sends == 0 && !interfaces.is_empty() {
+        Err(QmkError::SendReportError(
+            hidapi::HidError::HidApiError { message: "Failed to send to any devices".to_string() }
+        ))
+    } else if successful_sends < interfaces.len() {
+        Err(QmkError::PartialSendError {
+            succeeded: successful_sends,
+            failed: interfaces.len() - successful_sends,
+        })
+    } else {
+        Ok(())
+    }
 }
 
-fn get_raw_hid_interface(
+
+fn get_raw_hid_interfaces(
     vendor_id: u16,
     product_id: u16,
     usage_page: u16,
     usage: u16,
-) -> Result<HidDevice, QmkError> {
+) -> Result<Vec<HidDevice>, QmkError> {
     let api = HidApi::new().map_err(|e| QmkError::HidApiInitError(e.to_string()))?;
 
-    // Use iter() to create an iterator over the device list
-    let raw_hid_interface = api.device_list().find(|d| {
-        d.vendor_id() == vendor_id
-            && d.product_id() == product_id
-            && d.usage_page() == usage_page
-            && d.usage() == usage
-    });
+    let device_infos: Vec<_> = api
+        .device_list()
+        .filter(|d| {
+            d.vendor_id() == vendor_id
+                && d.product_id() == product_id
+                && d.usage_page() == usage_page
+                && d.usage() == usage
+        })
+        .collect();
 
-    match raw_hid_interface {
-        Some(interface_info) => interface_info
-            .open_device(&api)
-            .map_err(|e| QmkError::DeviceOpenError(e.to_string())),
-        None => Err(QmkError::DeviceNotFound(
-            vendor_id, product_id, usage_page, usage,
-        )),
+    // Debug output to see what devices match
+    println!("Searching for devices with VID: 0x{:04X}, PID: 0x{:04X}, Usage Page: 0x{:04X}, Usage: 0x{:04X}", 
+             vendor_id, product_id, usage_page, usage);
+    println!("Found {} matching device interfaces:", device_infos.len());
+    for (i, d) in device_infos.iter().enumerate() {
+        println!("  {}. Path: {:?}, VID: 0x{:04X}, PID: 0x{:04X}, Usage Page: 0x{:04X}, Usage: 0x{:04X}", 
+                 i+1, d.path(), d.vendor_id(), d.product_id(), d.usage_page(), d.usage());
     }
+
+    if device_infos.is_empty() {
+        return Err(QmkError::DeviceNotFound(
+            vendor_id, product_id, usage_page, usage,
+        ));
+    }
+
+    let opened_devices: Vec<HidDevice> = device_infos
+        .into_iter()
+        .filter_map(|info| info.open_device(&api).ok())
+        .collect();
+
+    if opened_devices.is_empty() {
+        return Err(QmkError::DeviceOpenError(
+            "Found matching HID devices, but could not open any of them for communication. Check permissions (udev rules on Linux)."
+                .to_string(),
+        ));
+    }
+
+    Ok(opened_devices)
 }

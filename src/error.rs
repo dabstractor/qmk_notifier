@@ -9,8 +9,14 @@ pub enum QmkError {
     InvalidHexValue(String),
     InvalidDecimalValue(String),
     SendReportError(HidError),
+    HidReadError(String),
+    NoResponseReceived(String),
     MissingRequiredParameter(String),
     RemovedFeature(String),
+    PartialSendError {
+        succeeded: usize,
+        failed: usize,
+    },
 }
 
 impl fmt::Display for QmkError {
@@ -26,8 +32,17 @@ impl fmt::Display for QmkError {
             QmkError::InvalidHexValue(e) => write!(f, "Invalid hex value: {}", e),
             QmkError::InvalidDecimalValue(e) => write!(f, "Invalid decimal value: {}", e),
             QmkError::SendReportError(e) => write!(f, "Error sending report: {}", e),
+            QmkError::HidReadError(e) => write!(f, "Error reading report: {}", e),
+            QmkError::NoResponseReceived(e) => write!(f, "No response received: {}", e),
             QmkError::MissingRequiredParameter(param) => write!(f, "Missing required parameter: {}", param),
             QmkError::RemovedFeature(feature) => write!(f, "Feature removed: {}", feature),
+            QmkError::PartialSendError { succeeded, failed } => {
+                write!(
+                    f,
+                    "Message sent to {} devices, but failed for {} devices.",
+                    succeeded, failed
+                )
+            }
         }
     }
 }

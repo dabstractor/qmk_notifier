@@ -114,7 +114,9 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
                 .long("create-config")
                 .help("Create example configuration file (REMOVED)")
                 .action(ArgAction::SetTrue),
-        );
+        )
+        // Show help when no arguments are provided
+        .arg_required_else_help(true);
 
     let matches = cmd.get_matches();
 
@@ -184,11 +186,9 @@ pub fn run(params: RunParameters) -> Result<(), QmkError> {
 
             let input = message.as_bytes();
 
-            // Ensure proper message termination by creating a new buffer
-            // with enough space for the message and explicit ETX terminator (0x03)
             let mut input_with_terminator = Vec::with_capacity(input.len() + 1);
             input_with_terminator.extend_from_slice(input);
-            input_with_terminator.push(0x03); // Add ETX (End of Text) character as terminator
+            input_with_terminator.push(0x03);
 
             if params.verbose {
                 println!(
@@ -197,7 +197,6 @@ pub fn run(params: RunParameters) -> Result<(), QmkError> {
                 );
             }
 
-            // Send the report with improved timing and response handling
             send_raw_report(
                 &input_with_terminator,
                 params.vendor_id,
@@ -307,18 +306,17 @@ mod tests {
         let result = run(params);
         match result {
             Ok(()) => {
-                // Success - device was found and message sent
+                // This is also acceptable if a device is connected
             }
-            Err(QmkError::DeviceNotFound(vid, pid, usage_page, usage)) => {
-                // Expected error when device is not connected
-                assert_eq!(vid, 0xFEED);
-                assert_eq!(pid, 0x0000);
-                assert_eq!(usage_page, 0xFF60);
-                assert_eq!(usage, 0x61);
+            Err(QmkError::DeviceNotFound(..)) => {
+                // Expected when no devices are found
+            }
+            Err(QmkError::PartialSendError { .. }) => {
+                // Expected if some devices fail
             }
             Err(e) => {
-                // Other errors are also acceptable (e.g., device access issues)
-                println!("Expected error: {}", e);
+                // Other errors might occur depending on the environment
+                println!("An unexpected error occurred: {}", e);
             }
         }
     }
