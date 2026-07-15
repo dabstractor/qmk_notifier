@@ -4,8 +4,6 @@ pub use core::{
     DEFAULT_USAGE_PAGE, DEFAULT_VENDOR_ID, REPORT_LENGTH,
 };
 
-
-
 use clap::{Arg, ArgAction, Command};
 
 // Export our error type
@@ -23,8 +21,8 @@ pub enum RunCommand {
 #[derive(Debug, Clone)]
 pub struct RunParameters {
     pub command: RunCommand,
-    pub vendor_id: u16,
-    pub product_id: u16,
+    pub vendor_id: Option<u16>,
+    pub product_id: Option<u16>,
     pub usage_page: u16,
     pub usage: u16,
     pub verbose: bool,
@@ -32,10 +30,14 @@ pub struct RunParameters {
 
 impl RunParameters {
     /// Create new RunParameters with all required fields
+    ///
+    /// `vendor_id` and `product_id` are `Option<u16>`: `None` means "match any"
+    /// device (auto-discovery by usage page/usage). `usage_page` and `usage` are
+    /// always required and act as the primary identifier.
     pub fn new(
         command: RunCommand,
-        vendor_id: u16,
-        product_id: u16,
+        vendor_id: Option<u16>,
+        product_id: Option<u16>,
         usage_page: u16,
         usage: u16,
         verbose: bool,
@@ -67,7 +69,7 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
                 .short('i')
                 .long("vendor-id")
                 .value_name("VID")
-                .help("USB vendor ID (decimal or 0xHEX format) [default: 0xFEED]")
+                .help("USB vendor ID (decimal or 0xHEX format) [default: auto (match any)]")
                 .value_parser(clap::value_parser!(String)),
         )
         .arg(
@@ -75,7 +77,7 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
                 .short('p')
                 .long("product-id")
                 .value_name("PID")
-                .help("USB product ID (decimal or 0xHEX format) [default: 0x0000]")
+                .help("USB product ID (decimal or 0xHEX format) [default: auto (match any)]")
                 .value_parser(clap::value_parser!(String)),
         )
         .arg(
@@ -123,27 +125,34 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
     // Check for removed feature
     if matches.get_flag("create-config") {
         return Err(QmkError::RemovedFeature(
-            "Config file creation has been removed. All parameters must be provided explicitly.".to_string()
+            "Config file creation has been removed. All parameters must be provided explicitly."
+                .to_string(),
         ));
     }
 
-    // Parse parameters with defaults
-    let vendor_id = matches.get_one::<String>("vendor-id")
+    // Parse parameters with defaults.
+    //
+    // VID/PID default to `None` (auto: match any device by usage page/usage).
+    // When the flag is present, parse it into `Some(value)`. Usage page/usage
+    // remain required and default to the QMK raw-HID convention.
+    let vendor_id = matches
+        .get_one::<String>("vendor-id")
         .map(|s| parse_hex_or_decimal(s))
-        .transpose()?
-        .unwrap_or(DEFAULT_VENDOR_ID);
+        .transpose()?; // Option<u16>, None when flag absent
 
-    let product_id = matches.get_one::<String>("product-id")
+    let product_id = matches
+        .get_one::<String>("product-id")
         .map(|s| parse_hex_or_decimal(s))
-        .transpose()?
-        .unwrap_or(DEFAULT_PRODUCT_ID);
+        .transpose()?;
 
-    let usage_page = matches.get_one::<String>("usage-page")
+    let usage_page = matches
+        .get_one::<String>("usage-page")
         .map(|s| parse_hex_or_decimal(s))
         .transpose()?
         .unwrap_or(DEFAULT_USAGE_PAGE);
 
-    let usage = matches.get_one::<String>("usage")
+    let usage = matches
+        .get_one::<String>("usage")
         .map(|s| parse_hex_or_decimal(s))
         .transpose()?
         .unwrap_or(DEFAULT_USAGE);
@@ -156,28 +165,31 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
     } else if let Some(message) = matches.get_one::<String>("message") {
         RunCommand::SendMessage(message.to_string())
     } else {
-        return Err(QmkError::MissingRequiredParameter("message or --list flag".to_string()));
+        return Err(QmkError::MissingRequiredParameter(
+            "message or --list flag".to_string(),
+        ));
     };
 
     Ok(RunParameters::new(
-        command,
-        vendor_id,
-        product_id,
-        usage_page,
-        usage,
-        verbose,
+        command, vendor_id, product_id, usage_page, usage, verbose,
     ))
 }
 
 /// Core function that executes the notifier logic with explicit parameters.
 pub fn run(params: RunParameters) -> Result<(), QmkError> {
     match params.command {
-        RunCommand::ListDevices => {
-            list_hid_devices()
-        }
+        RunCommand::ListDevices => list_hid_devices(),
         RunCommand::SendMessage(message) => {
             if params.verbose {
-                println!("Using VID: 0x{:04X}, PID: 0x{:04X}", params.vendor_id, params.product_id);
+                let vid = params
+                    .vendor_id
+                    .map(|v| format!("0x{v:04X}"))
+                    .unwrap_or_else(|| "any".into());
+                let pid = params
+                    .product_id
+                    .map(|p| format!("0x{p:04X}"))
+                    .unwrap_or_else(|| "any".into());
+                println!("Using VID: {vid}, PID: {pid}");
                 println!(
                     "Using Usage Page: 0x{:04X}, Usage: 0x{:04X}",
                     params.usage_page, params.usage
@@ -216,19 +228,19 @@ mod tests {
     fn test_run_parameters_creation() {
         let params = RunParameters::new(
             RunCommand::SendMessage("test".to_string()),
-            0xFEED,
-            0x0000,
+            Some(0xFEED),
+            Some(0x0000),
             0xFF60,
             0x61,
             true,
         );
 
-        assert_eq!(params.vendor_id, 0xFEED);
-        assert_eq!(params.product_id, 0x0000);
+        assert_eq!(params.vendor_id, Some(0xFEED));
+        assert_eq!(params.product_id, Some(0x0000));
         assert_eq!(params.usage_page, 0xFF60);
         assert_eq!(params.usage, 0x61);
-        assert_eq!(params.verbose, true);
-        
+        assert!(params.verbose);
+
         match params.command {
             RunCommand::SendMessage(msg) => assert_eq!(msg, "test"),
             _ => panic!("Expected SendMessage command"),
@@ -236,21 +248,39 @@ mod tests {
     }
 
     #[test]
+    fn test_run_parameters_auto_discovery() {
+        // VID/PID omitted -> None means "match any" (the keystone path).
+        let params = RunParameters::new(
+            RunCommand::SendMessage("auto".to_string()),
+            None,
+            None,
+            DEFAULT_USAGE_PAGE,
+            DEFAULT_USAGE,
+            false,
+        );
+
+        assert_eq!(params.vendor_id, None);
+        assert_eq!(params.product_id, None);
+        assert_eq!(params.usage_page, DEFAULT_USAGE_PAGE);
+        assert_eq!(params.usage, DEFAULT_USAGE);
+    }
+
+    #[test]
     fn test_run_parameters_list_devices() {
         let params = RunParameters::new(
             RunCommand::ListDevices,
-            0x1234,
-            0x5678,
+            Some(0x1234),
+            Some(0x5678),
             0xABCD,
             0xEF01,
             false,
         );
 
         match params.command {
-            RunCommand::ListDevices => {},
+            RunCommand::ListDevices => {}
             _ => panic!("Expected ListDevices command"),
         }
-        assert_eq!(params.verbose, false);
+        assert!(!params.verbose);
     }
 
     #[test]
@@ -271,13 +301,13 @@ mod tests {
         assert!(parse_hex_or_decimal("invalid").is_err());
         assert!(parse_hex_or_decimal("").is_err());
     }
-}  
-  #[test]
+
+    #[test]
     fn test_run_with_list_devices_command() {
         let params = RunParameters::new(
             RunCommand::ListDevices,
-            0xFEED,
-            0x0000,
+            Some(0xFEED),
+            Some(0x0000),
             0xFF60,
             0x61,
             false,
@@ -293,10 +323,11 @@ mod tests {
 
     #[test]
     fn test_run_with_send_message_command() {
+        // Explicit VID/PID still works (disambiguation).
         let params = RunParameters::new(
             RunCommand::SendMessage("test message".to_string()),
-            0xFEED,
-            0x0000,
+            Some(0xFEED),
+            Some(0x0000),
             0xFF60,
             0x61,
             false,
@@ -308,7 +339,7 @@ mod tests {
             Ok(()) => {
                 // This is also acceptable if a device is connected
             }
-            Err(QmkError::DeviceNotFound(..)) => {
+            Err(QmkError::DeviceNotFound { .. }) => {
                 // Expected when no devices are found
             }
             Err(QmkError::PartialSendError { .. }) => {
@@ -325,8 +356,8 @@ mod tests {
     fn test_run_with_verbose_output() {
         let params = RunParameters::new(
             RunCommand::SendMessage("verbose test".to_string()),
-            0x1234,
-            0x5678,
+            Some(0x1234),
+            Some(0x5678),
             0xABCD,
             0xEF01,
             true, // verbose = true
@@ -337,3 +368,4 @@ mod tests {
         // Should handle verbose output without panicking
         assert!(result.is_ok() || result.is_err());
     }
+}

@@ -53,8 +53,8 @@ pub fn list_hid_devices() -> Result<(), QmkError> {
 
 pub fn send_raw_report(
     data: &[u8],
-    vendor_id: u16,
-    product_id: u16,
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
     usage_page: u16,
     usage: u16,
     verbose: bool,
@@ -113,7 +113,7 @@ pub fn send_raw_report(
                 if verbose {
                     println!("{}", e);
                 }
-                break; 
+                break;
             }
 
             let mut response_buffer = vec![0u8; REPORT_LENGTH + 1];
@@ -134,17 +134,15 @@ pub fn send_raw_report(
 
         if batch_errors.is_empty() {
             successful_sends += 1;
-        } else {
-            if verbose {
-                println!("Failed to send message to a device: {:?}", batch_errors);
-            }
+        } else if verbose {
+            println!("Failed to send message to a device: {:?}", batch_errors);
         }
     }
 
     if successful_sends == 0 && !interfaces.is_empty() {
-        Err(QmkError::SendReportError(
-            hidapi::HidError::HidApiError { message: "Failed to send to any devices".to_string() }
-        ))
+        Err(QmkError::SendReportError(hidapi::HidError::HidApiError {
+            message: "Failed to send to any devices".to_string(),
+        }))
     } else if successful_sends < interfaces.len() {
         Err(QmkError::PartialSendError {
             succeeded: successful_sends,
@@ -155,10 +153,31 @@ pub fn send_raw_report(
     }
 }
 
+/// Pure match predicate for the raw-HID interface filter.
+///
+/// A device matches when its usage page/usage equal the required values, and
+/// its VID/PID equal the given values when those are `Some`. `None` VID/PID
+/// means "match any" (the default auto-discovery path).
+#[allow(clippy::too_many_arguments)]
+fn device_matches(
+    dev_vendor_id: u16,
+    dev_product_id: u16,
+    dev_usage_page: u16,
+    dev_usage: u16,
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
+    usage_page: u16,
+    usage: u16,
+) -> bool {
+    dev_usage_page == usage_page
+        && dev_usage == usage
+        && vendor_id.is_none_or(|v| dev_vendor_id == v)
+        && product_id.is_none_or(|p| dev_product_id == p)
+}
 
 fn get_raw_hid_interfaces(
-    vendor_id: u16,
-    product_id: u16,
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
     usage_page: u16,
     usage: u16,
 ) -> Result<Vec<HidDevice>, QmkError> {
@@ -167,17 +186,26 @@ fn get_raw_hid_interfaces(
     let device_infos: Vec<_> = api
         .device_list()
         .filter(|d| {
-            d.vendor_id() == vendor_id
-                && d.product_id() == product_id
-                && d.usage_page() == usage_page
-                && d.usage() == usage
+            device_matches(
+                d.vendor_id(),
+                d.product_id(),
+                d.usage_page(),
+                d.usage(),
+                vendor_id,
+                product_id,
+                usage_page,
+                usage,
+            )
         })
         .collect();
 
     if device_infos.is_empty() {
-        return Err(QmkError::DeviceNotFound(
-            vendor_id, product_id, usage_page, usage,
-        ));
+        return Err(QmkError::DeviceNotFound {
+            vendor_id,
+            product_id,
+            usage_page,
+            usage,
+        });
     }
 
     let opened_devices: Vec<HidDevice> = device_infos
@@ -193,4 +221,107 @@ fn get_raw_hid_interfaces(
     }
 
     Ok(opened_devices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEV_VID: u16 = 0xFEED;
+    const DEV_PID: u16 = 0x0000;
+    const DEV_PAGE: u16 = 0xFF60;
+    const DEV_USAGE: u16 = 0x61;
+
+    #[test]
+    fn matches_when_all_four_equal() {
+        assert!(device_matches(
+            DEV_VID,
+            DEV_PID,
+            DEV_PAGE,
+            DEV_USAGE,
+            Some(DEV_VID),
+            Some(DEV_PID),
+            DEV_PAGE,
+            DEV_USAGE,
+        ));
+    }
+
+    #[test]
+    fn matches_by_usage_page_alone_when_vid_pid_none() {
+        // The keystone auto-discovery path: VID/PID omitted.
+        assert!(device_matches(
+            DEV_VID, DEV_PID, DEV_PAGE, DEV_USAGE, None, None, DEV_PAGE, DEV_USAGE,
+        ));
+    }
+
+    #[test]
+    fn matches_arbitrary_vid_pid_when_none() {
+        // Any VID/PID device with the right usage/page matches.
+        assert!(device_matches(
+            0x1234, 0xABCD, DEV_PAGE, DEV_USAGE, None, None, DEV_PAGE, DEV_USAGE,
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_usage_page_even_when_vid_pid_match() {
+        assert!(!device_matches(
+            DEV_VID,
+            DEV_PID,
+            DEV_PAGE,
+            DEV_USAGE,
+            Some(DEV_VID),
+            Some(DEV_PID),
+            0x1234,
+            DEV_USAGE,
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_usage() {
+        assert!(!device_matches(
+            DEV_VID, DEV_PID, DEV_PAGE, DEV_USAGE, None, None, DEV_PAGE, 0x99,
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_vid_when_some() {
+        assert!(!device_matches(
+            DEV_VID,
+            DEV_PID,
+            DEV_PAGE,
+            DEV_USAGE,
+            Some(0x1111),
+            None,
+            DEV_PAGE,
+            DEV_USAGE,
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_pid_when_some() {
+        assert!(!device_matches(
+            DEV_VID,
+            DEV_PID,
+            DEV_PAGE,
+            DEV_USAGE,
+            None,
+            Some(0x2222),
+            DEV_PAGE,
+            DEV_USAGE,
+        ));
+    }
+
+    #[test]
+    fn vid_can_disambiguate_while_pid_any() {
+        assert!(device_matches(
+            DEV_VID,
+            DEV_PID,
+            DEV_PAGE,
+            DEV_USAGE,
+            Some(DEV_VID),
+            None,
+            DEV_PAGE,
+            DEV_USAGE,
+        ));
+    }
 }
