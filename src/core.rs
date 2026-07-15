@@ -174,15 +174,6 @@ fn get_raw_hid_interfaces(
         })
         .collect();
 
-    // Debug output to see what devices match
-    println!("Searching for devices with VID: 0x{:04X}, PID: 0x{:04X}, Usage Page: 0x{:04X}, Usage: 0x{:04X}", 
-             vendor_id, product_id, usage_page, usage);
-    println!("Found {} matching device interfaces:", device_infos.len());
-    for (i, d) in device_infos.iter().enumerate() {
-        println!("  {}. Path: {:?}, VID: 0x{:04X}, PID: 0x{:04X}, Usage Page: 0x{:04X}, Usage: 0x{:04X}", 
-                 i+1, d.path(), d.vendor_id(), d.product_id(), d.usage_page(), d.usage());
-    }
-
     if device_infos.is_empty() {
         return Err(QmkError::DeviceNotFound(
             vendor_id, product_id, usage_page, usage,
