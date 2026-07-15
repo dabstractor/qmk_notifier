@@ -8,6 +8,20 @@
 #include "print.h"
 #endif
 
+/*
+ * Logical size of a QMK Raw HID report exchanged with the host.
+ *
+ * This is 32 bytes on every QMK USB protocol — and is NOT the same as
+ * RAW_EPSIZE (the USB interrupt *packet* size):
+ *   - ChibiOS (STM32/RP2040/ATSAM) and LUFA (ATmega32U4): endpoint = 32,
+ *     and send_raw_hid() guards on length == 32.
+ *   - V-USB (low-speed AVR): endpoint = 8, but the driver reassembles a
+ *     32-byte logical report and guards on length == 32, fragmenting it
+ *     into 8-byte packets internally — passing 8 here would be rejected.
+ * 32 is therefore the single value raw_hid_send() accepts on any board.
+ */
+#define RAW_REPORT_SIZE 32
+
 // Function to sanitize strings by removing non-ASCII characters
 // This prevents Unicode decode errors when the data is processed by the Python CLI
 static void sanitize_string(char *str) {
@@ -332,10 +346,7 @@ void hid_notify(uint8_t *data, uint8_t length) {
             }
         }
     }
-    uint8_t response[length] = {};
+    uint8_t response[RAW_REPORT_SIZE] = {0};
     response[0] = match;
-    for (uint8_t i = 1; i < length; i++) {
-        response[i] = 0;
-    }
-    raw_hid_send(response, length);
+    raw_hid_send(response, RAW_REPORT_SIZE);
 }
