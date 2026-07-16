@@ -1,5 +1,6 @@
 use crate::error::QmkError;
 use hidapi::{HidApi, HidDevice};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 // Default constants
 pub const DEFAULT_VENDOR_ID: u16 = 0xFEED;
@@ -51,6 +52,28 @@ pub fn list_hid_devices() -> Result<(), QmkError> {
     Ok(())
 }
 
+/// Payload bytes carried per 32-byte raw-HID report.
+///
+/// Each report is laid out as `[report_id = 0, 0x81, 0x9F, <30 payload bytes…>]`
+/// inside a `REPORT_LENGTH + 1` byte buffer (the leading byte is the report ID
+/// demanded by HIDAPI's `write()` contract). 2 of those bytes are header
+/// overhead, leaving `REPORT_LENGTH - 2` = 30 bytes of payload per report.
+const PAYLOAD_PER_REPORT: usize = REPORT_LENGTH - 2;
+
+/// Ceiling on how many IN-side reports we drain after a burst. Today the
+/// keyboard never acks (its ack is silently dropped by `send_raw_hid`), so the
+/// drain is a no-op. But with a persistent handle we MUST drain once the
+/// firmware ack bug is ever fixed, otherwise acks accumulate in the kernel IN
+/// buffer and eventually stall `raw_hid_send` on the device. Bounded so a
+/// misbehaving IN endpoint can't wedge the notifier.
+const IN_DRAIN_MAX: usize = 32;
+
+/// On a total send failure (e.g. the keyboard was unplugged/replugged and the
+/// cached handle is now stale), rebuild the device cache and retry this many
+/// times before giving up. Only retries when *zero* devices succeeded, so a
+/// partial send is never re-sent (no duplicate notifications).
+const SEND_RETRIES: usize = 1;
+
 pub fn send_raw_report(
     data: &[u8],
     vendor_id: Option<u16>,
@@ -59,98 +82,317 @@ pub fn send_raw_report(
     usage: u16,
     verbose: bool,
 ) -> Result<(), QmkError> {
-    let interfaces = get_raw_hid_interfaces(vendor_id, product_id, usage_page, usage)?;
-    let mut successful_sends = 0;
+    let key = MatchKey {
+        vendor_id,
+        product_id,
+        usage_page,
+        usage,
+    };
+    let batch_count = batches_for(data);
 
     if verbose {
-        println!("Found {} matching devices.", interfaces.len());
+        println!("Request data ({} bytes):", data.len());
+        println!("{:?}", data);
     }
 
-    for (device_idx, interface) in interfaces.iter().enumerate() {
-        if verbose {
-            let device_path = match interface.get_device_info() {
-                Ok(info) => format!("{:?}", info.path()),
-                Err(_) => "N/A".to_string(),
-            };
-            println!(
-                "Sending to device {}/{}: Path: {}",
-                device_idx + 1,
-                interfaces.len(),
-                device_path
-            );
-        }
-
-        let batch_count = (data.len() + REPORT_LENGTH - 3) / (REPORT_LENGTH - 2);
-
-        if verbose {
-            println!("Request data ({} bytes):", data.len());
-            println!("{:?}", data);
-        }
-
-        let mut batch_errors = Vec::new();
-
-        for batch in 0..batch_count {
-            let start_idx = batch * (REPORT_LENGTH - 2);
-            let end_idx = (start_idx + (REPORT_LENGTH - 2)).min(data.len());
-            let batch_data = &data[start_idx..end_idx];
-
-            let mut request_data = vec![0u8; REPORT_LENGTH + 1];
-            request_data[1] = 0x81;
-            request_data[2] = 0x9F;
-
-            if !batch_data.is_empty() {
-                request_data[3..3 + batch_data.len()].copy_from_slice(batch_data);
+    for attempt in 0..=SEND_RETRIES {
+        match try_send_once(&key, data, batch_count, verbose)? {
+            SendOutcome::AllSucceeded => return Ok(()),
+            SendOutcome::Partial { succeeded, failed } => {
+                return Err(QmkError::PartialSendError { succeeded, failed });
             }
-
-            if verbose {
-                println!("Sending batch {}/{}", batch + 1, batch_count);
-                println!("{:?}", request_data);
-            }
-
-            if let Err(e) = interface.write(&request_data) {
-                let error_msg = format!("Error on batch {}: {}", batch + 1, e);
-                batch_errors.push(error_msg);
+            SendOutcome::TotalFailure if attempt < SEND_RETRIES => {
+                // The cache was already invalidated inside try_send_once; the
+                // next iteration re-enumerates + reopens.
                 if verbose {
-                    println!("{}", e);
+                    println!(
+                        "All sends failed; rebuilding device cache and retrying (attempt {}/{}).",
+                        attempt + 2,
+                        SEND_RETRIES + 1
+                    );
                 }
-                break;
+                continue;
             }
-
-            let mut response_buffer = vec![0u8; REPORT_LENGTH + 1];
-            match interface.read_timeout(&mut response_buffer, 100) {
-                Ok(size) => {
-                    if verbose {
-                        println!("Received response ({} bytes):", size);
-                        println!("{:?}", &response_buffer[..size]);
-                    }
-                }
-                Err(e) => {
-                    if verbose {
-                        println!("No response for batch {}: {}", batch + 1, e);
-                    }
-                }
+            SendOutcome::TotalFailure => {
+                return Err(QmkError::SendReportError(hidapi::HidError::HidApiError {
+                    message: "Failed to send to any devices".to_string(),
+                }));
             }
-        }
-
-        if batch_errors.is_empty() {
-            successful_sends += 1;
-        } else if verbose {
-            println!("Failed to send message to a device: {:?}", batch_errors);
         }
     }
 
-    if successful_sends == 0 && !interfaces.is_empty() {
-        Err(QmkError::SendReportError(hidapi::HidError::HidApiError {
-            message: "Failed to send to any devices".to_string(),
-        }))
-    } else if successful_sends < interfaces.len() {
-        Err(QmkError::PartialSendError {
-            succeeded: successful_sends,
-            failed: interfaces.len() - successful_sends,
-        })
+    unreachable!("the retry loop always returns on its first or final iteration")
+}
+
+/// Outcome of a single send attempt against the cached device handles.
+#[derive(Debug)]
+enum SendOutcome {
+    /// Every device accepted the full burst.
+    AllSucceeded,
+    /// Some devices succeeded, some failed.
+    Partial { succeeded: usize, failed: usize },
+    /// No device accepted the burst (the cache has been invalidated).
+    TotalFailure,
+}
+
+/// One full attempt: ensure the cache is populated for `key`, then burst-write
+/// `data` to every cached device. Invalidates the cache on any write error so
+/// the next attempt/call re-enumerates + reopens.
+fn try_send_once(
+    key: &MatchKey,
+    data: &[u8],
+    batch_count: usize,
+    verbose: bool,
+) -> Result<SendOutcome, QmkError> {
+    let mut cache = lock_cache();
+    ensure_cache(&mut cache, key, verbose)?;
+
+    let device_count = cache.as_ref().expect("cache populated").devices.len();
+    if verbose {
+        println!("Found {} matching device(s).", device_count);
+    }
+
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+
+    {
+        let devices: &Vec<HidDevice> = &cache.as_ref().expect("cache populated").devices;
+        for (device_idx, interface) in devices.iter().enumerate() {
+            if verbose {
+                let device_path = match interface.get_device_info() {
+                    Ok(info) => format!("{:?}", info.path()),
+                    Err(_) => "N/A".to_string(),
+                };
+                println!(
+                    "Sending to device {}/{}: Path: {}",
+                    device_idx + 1,
+                    device_count,
+                    device_path
+                );
+            }
+
+            if burst_to_one(interface, data, batch_count, verbose) {
+                succeeded += 1;
+            } else {
+                failed += 1;
+                if verbose {
+                    println!(
+                        "Failed to send message to device {}/{}.",
+                        device_idx + 1,
+                        device_count
+                    );
+                }
+            }
+        }
+    }
+
+    // A write error means the cached handle is suspect (e.g. a replug made the
+    // old fd stale). Drop the cache so the next attempt/call re-enumerates.
+    if failed > 0 {
+        *cache = None;
+        if verbose {
+            println!("Invalidating device cache after a write error.");
+        }
+    }
+
+    Ok(if succeeded == 0 {
+        SendOutcome::TotalFailure
+    } else if failed > 0 {
+        SendOutcome::Partial { succeeded, failed }
     } else {
-        Ok(())
+        SendOutcome::AllSucceeded
+    })
+}
+
+/// Burst-write `data` to a single device as `batch_count` back-to-back raw-HID
+/// reports, then drain any pending IN-side reports. Returns `false` on the
+/// first write error.
+///
+/// Burst-write is safe without a per-report ack: QMK's raw-HID OUT endpoint
+/// buffers up to `RAW_OUT_CAPACITY` (4) reports and drains them all in one
+/// main-loop pass (`raw_hid_task`: `while (receive_report(...))
+/// raw_hid_receive(...)`). The OUT endpoint provides its own backpressure — when
+/// the device buffer is full it NAKs the transfer and the host's `write()`
+/// blocks until space frees. Reports are never dropped, so burst-write is safe
+/// for ANY title length. See IMPLEMENTATION_PLAN.md.
+fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose: bool) -> bool {
+    let mut request_data = [0u8; REPORT_LENGTH + 1]; // stack array (was vec!)
+    request_data[1] = 0x81;
+    request_data[2] = 0x9F;
+
+    for batch in 0..batch_count {
+        let start_idx = batch * PAYLOAD_PER_REPORT;
+        let end_idx = (start_idx + PAYLOAD_PER_REPORT).min(data.len());
+        let batch_data = &data[start_idx..end_idx];
+
+        request_data[3..].fill(0); // clear reused payload tail
+        if !batch_data.is_empty() {
+            request_data[3..3 + batch_data.len()].copy_from_slice(batch_data);
+        }
+
+        if verbose {
+            println!("Sending batch {}/{}", batch + 1, batch_count);
+            println!("{:?}", request_data);
+        }
+
+        if let Err(e) = interface.write(&request_data) {
+            if verbose {
+                println!("Error on batch {}: {}", batch + 1, e);
+            }
+            return false;
+        }
     }
+
+    // Drain any pending IN-side reports (non-blocking). Today the keyboard's
+    // ack is silently dropped by send_raw_hid (it requires length ==
+    // RAW_EPSIZE), so nothing accumulates and the first read returns Ok(0)
+    // immediately (one cheap poll) and we stop. But with a persistent handle
+    // we MUST drain once the firmware ack bug is fixed, otherwise acks
+    // accumulate and eventually stall raw_hid_send on the device.
+    //
+    // Note: read_timeout(0) returns Ok(0) on "no data" (poll times out), not an
+    // error, so we break on Ok(0)/Err and only keep draining on a real read
+    // (n > 0). Bounded by IN_DRAIN_MAX so a flooding IN endpoint can't wedge us.
+    let mut drain_buf = [0u8; REPORT_LENGTH + 1];
+    for _ in 0..IN_DRAIN_MAX {
+        match interface.read_timeout(&mut drain_buf, 0) {
+            Ok(n) if n > 0 => continue,
+            _ => break,
+        }
+    }
+
+    true
+}
+
+/// Number of reports needed to carry `data.len()` payload bytes (0 when empty).
+fn batches_for(data: &[u8]) -> usize {
+    (data.len() + REPORT_LENGTH - 3) / PAYLOAD_PER_REPORT
+}
+
+/// Match parameters a cached handle set was opened for. The cache is rebuilt
+/// whenever a request uses a different key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct MatchKey {
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
+    usage_page: u16,
+    usage: u16,
+}
+
+/// A long-lived HID context plus the handles opened from it for a [`MatchKey`].
+/// Kept in a global [`Mutex`] so repeated notifications reuse the same handles
+/// (and the same enumerated `HidApi`) instead of re-scanning the whole HID bus
+/// on every call. Enumerating + opening was, with the per-report reads gone,
+/// the dominant per-notification cost.
+struct DeviceCache {
+    /// Long-lived HID context the handles were opened from. Retained (rather
+    /// than dropped after opening) to pin the context's lifetime for the cached
+    /// handles and to enable a cheaper `refresh_devices()`-based rebuild later.
+    /// It is intentionally not read on the hot path.
+    #[allow(dead_code)]
+    api: HidApi,
+    devices: Vec<HidDevice>,
+    key: MatchKey,
+}
+
+static DEVICE_CACHE: LazyLock<Mutex<Option<DeviceCache>>> = LazyLock::new(|| Mutex::new(None));
+
+/// Lock the global device cache, recovering from a poisoned mutex (a previous
+/// holder panicked) rather than propagating the panic.
+fn lock_cache() -> MutexGuard<'static, Option<DeviceCache>> {
+    DEVICE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Ensure the cache slot holds a handle set for `key`. (Re)builds it — full
+/// `HidApi` enumeration + open — only when empty or when the key changes; the
+/// hot path reuses the cached handles and returns immediately.
+///
+/// Note: a newly-plugged *additional* matching device is not picked up until a
+/// write fails (forcing a rebuild) or the match key changes. This is the
+/// intentional trade-off of caching and is fine for the single-keyboard use
+/// case (the replug case is handled: a stale handle fails the write, which
+/// invalidates the cache and triggers this rebuild).
+fn ensure_cache(
+    cache: &mut Option<DeviceCache>,
+    key: &MatchKey,
+    verbose: bool,
+) -> Result<(), QmkError> {
+    if let Some(existing) = cache.as_ref() {
+        if &existing.key == key {
+            if verbose {
+                println!(
+                    "Reusing cached device handle ({} device(s)).",
+                    existing.devices.len()
+                );
+            }
+            return Ok(());
+        }
+    }
+
+    if verbose {
+        println!("Building device cache (enumerating HID bus)...");
+    }
+
+    let api = HidApi::new().map_err(|e| QmkError::HidApiInitError(e.to_string()))?;
+    let devices = open_matching_devices(&api, key)?;
+
+    let count = devices.len();
+    *cache = Some(DeviceCache {
+        api,
+        devices,
+        key: *key,
+    });
+
+    if verbose {
+        println!("Cached {} matching device(s).", count);
+    }
+    Ok(())
+}
+
+/// Enumerate `api` and open every interface matching `key`. Mirrors the old
+/// per-call enumeration but reuses an existing `HidApi` so the cache can share a
+/// single context across calls.
+fn open_matching_devices(api: &HidApi, key: &MatchKey) -> Result<Vec<HidDevice>, QmkError> {
+    let device_infos: Vec<_> = api
+        .device_list()
+        .filter(|d| {
+            device_matches(
+                d.vendor_id(),
+                d.product_id(),
+                d.usage_page(),
+                d.usage(),
+                key.vendor_id,
+                key.product_id,
+                key.usage_page,
+                key.usage,
+            )
+        })
+        .collect();
+
+    if device_infos.is_empty() {
+        return Err(QmkError::DeviceNotFound {
+            vendor_id: key.vendor_id,
+            product_id: key.product_id,
+            usage_page: key.usage_page,
+            usage: key.usage,
+        });
+    }
+
+    let opened_devices: Vec<HidDevice> = device_infos
+        .into_iter()
+        .filter_map(|info| info.open_device(api).ok())
+        .collect();
+
+    if opened_devices.is_empty() {
+        return Err(QmkError::DeviceOpenError(
+            "Found matching HID devices, but could not open any of them for communication. Check permissions (udev rules on Linux)."
+                .to_string(),
+        ));
+    }
+
+    Ok(opened_devices)
 }
 
 /// Pure match predicate for the raw-HID interface filter.
@@ -173,54 +415,6 @@ fn device_matches(
         && dev_usage == usage
         && vendor_id.is_none_or(|v| dev_vendor_id == v)
         && product_id.is_none_or(|p| dev_product_id == p)
-}
-
-fn get_raw_hid_interfaces(
-    vendor_id: Option<u16>,
-    product_id: Option<u16>,
-    usage_page: u16,
-    usage: u16,
-) -> Result<Vec<HidDevice>, QmkError> {
-    let api = HidApi::new().map_err(|e| QmkError::HidApiInitError(e.to_string()))?;
-
-    let device_infos: Vec<_> = api
-        .device_list()
-        .filter(|d| {
-            device_matches(
-                d.vendor_id(),
-                d.product_id(),
-                d.usage_page(),
-                d.usage(),
-                vendor_id,
-                product_id,
-                usage_page,
-                usage,
-            )
-        })
-        .collect();
-
-    if device_infos.is_empty() {
-        return Err(QmkError::DeviceNotFound {
-            vendor_id,
-            product_id,
-            usage_page,
-            usage,
-        });
-    }
-
-    let opened_devices: Vec<HidDevice> = device_infos
-        .into_iter()
-        .filter_map(|info| info.open_device(&api).ok())
-        .collect();
-
-    if opened_devices.is_empty() {
-        return Err(QmkError::DeviceOpenError(
-            "Found matching HID devices, but could not open any of them for communication. Check permissions (udev rules on Linux)."
-                .to_string(),
-        ));
-    }
-
-    Ok(opened_devices)
 }
 
 #[cfg(test)]
@@ -323,5 +517,47 @@ mod tests {
             DEV_PAGE,
             DEV_USAGE,
         ));
+    }
+
+    #[test]
+    fn batches_for_empty_is_zero() {
+        assert_eq!(batches_for(&[]), 0);
+    }
+
+    #[test]
+    fn batches_for_single_byte_is_one() {
+        assert_eq!(batches_for(&[0x03]), 1);
+    }
+
+    #[test]
+    fn batches_for_exact_report_multiple() {
+        // 30 payload bytes = exactly one report; 60 = exactly two.
+        assert_eq!(batches_for(&[0u8; 30]), 1);
+        assert_eq!(batches_for(&[0u8; 60]), 2);
+    }
+
+    #[test]
+    fn batches_for_one_over_splits() {
+        // A single byte past a report boundary forces an extra report.
+        assert_eq!(batches_for(&[0u8; 31]), 2);
+        assert_eq!(batches_for(&[0u8; 61]), 3);
+    }
+
+    #[test]
+    fn match_key_equality_drives_cache_rebuild() {
+        let auto = MatchKey {
+            vendor_id: None,
+            product_id: None,
+            usage_page: DEV_PAGE,
+            usage: DEV_USAGE,
+        };
+        let explicit = MatchKey {
+            vendor_id: Some(DEV_VID),
+            product_id: Some(DEV_PID),
+            usage_page: DEV_PAGE,
+            usage: DEV_USAGE,
+        };
+        assert_eq!(auto, auto);
+        assert_ne!(auto, explicit);
     }
 }
