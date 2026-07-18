@@ -1,0 +1,516 @@
+{
+  "backlog": [
+    {
+      "type": "Phase",
+      "id": "P1",
+      "title": "Pattern Matching Engine (pattern_match.{c,h})",
+      "status": "Researching",
+      "description": "Build the Thompson-NFA regex engine and its complete host-side test suite. This is the foundational, independently-testable component. It must compile both as a standalone translation unit (host tests) and when #included by notifier.c (QMK build). All 1826 test assertions must pass.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P1.M1",
+          "title": "Public Header & Parsing Pipeline",
+          "status": "Planned",
+          "description": "Establish the public API header and the pattern-processing pipeline (escape processing, anchor detection, public entry point).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M1.T1",
+              "title": "pattern_match.h — Public API Header",
+              "status": "Planned",
+              "description": "Write the public header with the pattern_match function declaration and the complete doc comment.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S1",
+                  "title": "Write pattern_match.h",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.6", "h2.7/h3.21", "h2.15", "h2.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §Overview. The header is consumed by both host test programs (#include \"pattern_match.h\") and by notifier.c (which includes the .c, not this .h, but the .h is still the public contract).\n2. INPUT: None — this is the first file in the project.\n3. LOGIC: Create pattern_match.h with: (a) #pragma once, (b) #include <stdbool.h>, (c) the full doc comment from PRD §6 describing wildcard *, anchors ^/$, escapes \\^ \\$ \\* \\\\, the @note NULL→false contract, thread-safety, and memory management, (d) the single function declaration: bool pattern_match(const char *pattern, const char *str, bool case_sensitive);\n4. OUTPUT: pattern_match.h — a header that test files include via #include \"pattern_match.h\" and that defines the public contract. Must be ~53 lines.\n5. DOCS: [Mode A] The doc comment IS the documentation — reproduce it verbatim from PRD §6 including the @param/@return/@note tags. No separate docs file needed."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T2",
+              "title": "Processed-Pattern Pipeline (process_escapes, parse_pattern, entry point)",
+              "status": "Planned",
+              "description": "Implement the pattern-processing pipeline: escape/metacharacter processing, anchor detection, the public pattern_match entry point, and cleanup.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S1",
+                  "title": "Implement process_escapes() — escape/metachar processor",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": ["h2.7/h3.22", "h2.7/h3.21", "h2.7/h3.25", "h2.15", "h2.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §Processed-Pattern Byte Contract and §process_escapes Logic. This function is the single malloc per pattern_match call (freed by free_parsed_pattern).\n2. INPUT: A NUL-terminated C string (the 'core' pattern with ^/$ anchors already stripped by parse_pattern). May contain backslash escapes, bare *, bare +, bare ., and ordinary chars.\n3. LOGIC: Implement static char *process_escapes(const char *pattern). Walk the source byte-by-byte, maintaining bool last_consumable. Emit placeholder bytes per PRD §7.1: \\^→0x01, \\$→0x02, \\*→0x03, \\\\→0x04, \\d→0x05, \\D→0x06, \\w→0x07, \\W→0x08, \\s→0x09, \\S→0x0A, \\b→0x0B (last_consumable=false), \\B→0x0C (last_consumable=false), bare .→0x0D. Bare *→0x2A (last_consumable=false). Bare +→ if last_consumable: 0x0E marker (set false); else literal + (set true). \\.→literal dot, \\+→literal plus. Unrecognized escape (\\x, \\z)→emit \\\\ + char literally. Trailing lone \\→literal backslash. malloc(len+1) for the result. NULL input→return NULL.\n4. OUTPUT: A malloc'd NUL-terminated byte string of placeholder/literal bytes (the 'processed pattern' consumed by nfa_compile). The caller (parse_pattern) owns and must free this.\n5. DOCS: [Mode A] Add inline code comments documenting the placeholder byte mapping (0x01-0x0E). Reference PRD §7.1 byte contract table."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S2",
+                  "title": "Implement parse_pattern(), free_parsed_pattern(), pattern_match(), get_escaped_char()",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.7/h3.23", "h2.6", "h2.7/h3.21", "h2.15"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §Call Chain and §parse_pattern Anchor Detection. The parsed_pattern_t struct holds {core_pattern, start_anchored, end_anchored, processed_pattern}.\n2. INPUT: process_escapes() output from dependency P1.M1.T2.S1. The raw pattern string from the caller.\n3. LOGIC: (a) Define typedef struct { const char *core_pattern; bool start_anchored; bool end_anchored; char *processed_pattern; } parsed_pattern_t. (b) parse_pattern(pattern): detect leading ^→start_anchored; detect trailing $ (even backslash count before it)→end_anchored; carve out core substring; malloc temp core; call process_escapes(core); free temp; set core_pattern to the processed result. On malloc failure, fall back to raw pattern. (c) get_escaped_char(placeholder): reverse-map 0x01→^, 0x02→$, 0x03→*, 0x04→\\\\, 0x05→d, ..., 0x0D→. (debug-only). (d) free_parsed_pattern(parsed): free processed_pattern, NULL the pointers. (e) pattern_match(pattern, str, case_sensitive): NULL guard→false; parse; call match_with_anchors (implemented in P1.M3.T2.S2); free; return result.\n4. OUTPUT: The public bool pattern_match() function, plus the internal parse/free/get_escaped_char helpers. pattern_match returns false for NULL inputs.\n5. MOCKING: match_with_anchors is NOT yet implemented — write a stub that returns false temporarily; it will be replaced by P1.M3.T2.S2. Alternatively, implement this subtask to call through to match_with_anchors and accept that tests won't pass until P1.M3.T2.S2 is done.\n6. DOCS: [Mode A] Add inline comments on parse_pattern documenting the even-backslash-count rule for $ anchor detection."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M2",
+          "title": "Thompson NFA Engine",
+          "status": "Planned",
+          "description": "Implement the NFA compilation and simulation that replace the former backtracking matcher with guaranteed linear-time O(states × strlen) matching.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M2.T1",
+              "title": "NFA Compilation (State struct, ops, nfa_compile)",
+              "status": "Planned",
+              "description": "Define the NFA state machine data structures and implement Thompson construction from the processed-pattern byte string.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S1",
+                  "title": "Define State struct, ops enum, sizing constants",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M1.T2.S2"],
+                  "prd_selectors": ["h2.7/h3.25", "h2.7/h3.29", "h2.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §NFA State. The State pool is stack-allocated; sizing is ~6-8KB at NFA_MAX_PATTERN=128.\n2. INPUT: The existing pattern_match.c file from P1.M1.T2.S2 (same translation unit).\n3. LOGIC: Define: #define NFA_MAX_PATTERN 128; #define NFA_MAX_STATES (2 * NFA_MAX_PATTERN + 2) [=258]; enum { OP_CHAR, OP_ANY, OP_SPLIT, OP_ASSERT, OP_MATCH }; typedef struct State State; struct State { int op; char arg; State *out; State *out1; int lastlist; }; Declare static int nfa_gen = 0; (the only file-scope mutable global).\n4. OUTPUT: The type definitions and constants needed by nfa_compile and nfa_match.\n5. DOCS: [Mode A] Add comments on each op enum value and on the lastlist field explaining the generation-tag dedup mechanism."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S2",
+                  "title": "Implement nfa_compile() — Thompson construction",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.7/h3.25", "h2.7/h3.21", "h2.7/h3.28", "h2.15"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §NFA Compilation. Reference: Russ Cox, 'Regular Expression Matching Can Be Simple And Fast' (https://swtch.com/~rsc/regexp/regexp1.html). The key invariant: a+a+a+... must compile linearly (no state blow-up).\n2. INPUT: A NUL-terminated byte string (the processed pattern from process_escapes, P1.M1.T2.S1), a State pool array (caller-allocated on stack), and an int* for state count output.\n3. LOGIC: Implement static State *nfa_compile(const char *pat, State *pool, int *nstates_out). Walk the processed pattern: (a) 0x2A (glob *)→OP_ANY + OP_SPLIT that loops back through the ANY (.* semantics, matches empty AND newline). (b) 0x0B/0x0C→OP_ASSERT (zero-width, arg=0x0B or 0x0C). (c) 0x0E standalone→skip defensively (should not occur). (d) consuming element X: if next byte is 0x0E→OP_CHAR(X) then OP_SPLIT(loop-back to X / exit), advance past 0x0E; else plain OP_CHAR(X). (e) End→append OP_MATCH. Thread a State **tail pointer so each unit writes its start into the previous unit's out/out1 slot. Use a NEW() macro: &pool[n < NFA_MAX_STATES ? n++ : n] (bounds-safe). After all states allocated, zero lastlist on every state (pool is stack-fresh each call). Return start state.\n4. OUTPUT: A compiled NFA start state pointer (into the caller's pool). The caller then passes this to nfa_match.\n5. DOCS: [Mode A] Add inline comments on each branch explaining the Thompson construction pattern. Reference §7.8 for why NFA (not backtracking)."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T2",
+              "title": "NFA Simulation (nfa_addstate, nfa_match, nfa_has_match)",
+              "status": "Planned",
+              "description": "Implement the linear-time NFA simulation with epsilon-closure, generation-tag deduplication, and the two-list swap algorithm.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S1",
+                  "title": "Implement nfa_addstate() epsilon-closure with lastlist guard",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S2"],
+                  "prd_selectors": ["h2.7/h3.25", "h2.7/h3.26", "h2.13"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §nfa_addstate. The lastlist generation tag is MANDATORY (PRD §13 invariant #11) — without it OP_SPLIT and \\b\\b recurse infinitely.\n2. INPUT: A State pointer s, a State** list with int* count n, the original string_start pointer and current abspos (absolute offset into the original string). The global nfa_gen must have been bumped before calling.\n3. LOGIC: Implement static void nfa_addstate(State **list, int *n, State *s, const char *string_start, size_t abspos). Guard: if (!s || s->lastlist == nfa_gen) return (de-dup). Set s->lastlist = nfa_gen. OP_MATCH→add to list. OP_SPLIT→recurse into both out and out1 (same abspos). OP_ASSERT→check is_word_boundary(string_start, abspos) == want_boundary (want_boundary=true for 0x0B). If the original string is empty (*string_start == '\\0'), neither boundary nor non-boundary passes (legacy semantics). Only recurse into s->out if condition met. OP_CHAR/OP_ANY→add to list (waiting to consume a char).\n4. OUTPUT: Populates the list with all states reachable via epsilon transitions from s. Used by nfa_match at each simulation step.\n5. DOCS: [Mode A] Comment the infinite-recursion prevention mechanism. Note the empty-string special case for assertions."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S2",
+                  "title": "Implement nfa_match() simulation + nfa_has_match()",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.7/h3.25", "h2.7/h3.28", "h2.7/h3.24", "h2.13", "h2.15"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §NFA Simulation. Signature: static bool nfa_match(const char *pattern, const char *str, const char *string_start, bool case_sensitive, bool full_match). This is O(states × strlen) ALWAYS — no catastrophic backtracking. Verified: pathological a+a+a+a+a+a+a+a+a+a+b vs 199×a finishes in ~1.6ms.\n2. INPUT: pattern (processed-pattern bytes), str (current position in input), string_start (original input base for \\b/\\B absolute positions), case_sensitive flag, full_match bool.\n3. LOGIC: (a) Declare stack arrays: State pool[NFA_MAX_STATES], State *clist_buf[NFA_MAX_STATES], State *nlist_buf[NFA_MAX_STATES]. (b) Compile: start = nfa_compile(pattern, pool, &nstates). Empty pattern→return full_match ? (*str=='\\0') : true. (c) abspos = str - string_start. (d) nfa_gen++; nfa_addstate(clist, &cn, start, string_start, abspos). (e) If !full_match && nfa_has_match(clist)→return true. (f) Loop: for each input char c at pos: nfa_gen++; for each state in clist: OP_ANY→nfa_addstate(nlist, s->out, pos+1); OP_CHAR && pattern_char_matches(s->arg, c, cs)→nfa_addstate(nlist, s->out, pos+1). Swap clist/nlist. If cn==0→break (dead). If !full_match && nfa_has_match(clist)→return true. (g) Return nfa_has_match(clist) ? true : false. (h) nfa_has_match(list, n): scan for any OP_MATCH state.\n4. OUTPUT: bool — true if the NFA matches str (prefix if !full_match, full if full_match). This is called by match_string_with_start (full=false) and match_reaches_end_with_start (full=true), which are called by match_with_anchors (P1.M3.T2.S2).\n5. DOCS: [Mode A] Comment the two-list swap algorithm and the full_match semantics. Reference §7.8 for the NFA rationale."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M3",
+          "title": "Character Classification & Anchor Strategy",
+          "status": "Planned",
+          "description": "Implement the character classification helpers, the single-char predicate, and the anchor-strategy selection logic that ties the NFA to the public API.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M3.T1",
+              "title": "Character Classification Helpers",
+              "status": "Planned",
+              "description": "Implement the static classification functions used by the NFA for \\d, \\w, \\s, and \\b/\\B assertions.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T1.S1",
+                  "title": "Implement is_digit_char, is_word_char, is_whitespace_char, is_word_boundary",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T2.S2"],
+                  "prd_selectors": ["h2.7/h3.26", "h2.7/h3.25", "h2.15"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §Character Classification Helpers. These are used by pattern_char_matches (P1.M3.T2.S1) and nfa_addstate's OP_ASSERT handling (P1.M2.T2.S1).\n2. INPUT: A char c (for classifiers) or a const char* str + size_t pos (for is_word_boundary).\n3. LOGIC: (a) is_digit_char(c): return c >= '0' && c <= '9'. (b) is_word_char(c): return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||(c=='_'). (c) is_whitespace_char(c): return c==' '||c=='\\t'||c=='\\n'||c=='\\r'||c=='\\f'||c=='\\v'. (d) is_word_boundary(str, pos): NULL→false. pos==0→true iff str[0] is word char. pos==strlen→true iff str[len-1] is word char. pos>strlen→false. interior→true iff is_word_char(str[pos-1]) != is_word_char(str[pos]).\n4. OUTPUT: Four static bool functions used throughout the matcher.\n5. DOCS: [Mode A] Add doc comments on each function per PRD §7.6 format."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M3.T2",
+              "title": "Single-Char Predicate & Anchor Strategy",
+              "status": "Planned",
+              "description": "Implement the single-char predicate (pattern_char_matches) and the matching-strategy selection (match_with_anchors) that dispatches to the NFA based on anchor flags.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T2.S1",
+                  "title": "Implement pattern_char_matches()",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M3.T1.S1"],
+                  "prd_selectors": ["h2.7/h3.27", "h2.7/h3.21", "h2.15"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §pattern_char_matches. This is called by nfa_match for each OP_CHAR state. The matcher uses THIS function, NOT get_escaped_char, for matching.\n2. INPUT: char pc (the processed-pattern byte), char sc (the input string char), bool case_sensitive.\n3. LOGIC: static bool pattern_char_matches(char pc, char sc, bool case_sensitive). pc in 0x01-0x04→literal (decode via get_escaped_char), case-folded via tolower unless case_sensitive. 0x05→is_digit_char(sc) [\\d]. 0x06→!is_digit_char(sc) [\\D]. 0x07→is_word_char(sc) [\\w]. 0x08→!is_word_char(sc) [\\W]. 0x09→is_whitespace_char(sc) [\\s]. 0x0A→!is_whitespace_char(sc) [\\S]. 0x0D→sc!='\\n' && sc!='\\r' [dot]. default→ordinary literal, case-folded unless case_sensitive.\n4. OUTPUT: bool — whether a single processed-pattern byte matches a single input char.\n5. DOCS: [Mode A] Add a switch-case comment block documenting each placeholder byte's semantics."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T2.S2",
+                  "title": "Implement match_with_anchors() + match_string_with_start() + match_reaches_end_with_start()",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T2.S2", "P1.M3.T2.S1"],
+                  "prd_selectors": ["h2.7/h3.24", "h2.7/h3.25", "h2.15", "h2.13"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/pattern_match_architecture.md §Matching Strategy. string_start is ALWAYS the original string base (not the per-offset str pointer) so \\b/\\B compute absolute positions.\n2. INPUT: A parsed_pattern_t* (with core_pattern, start_anchored, end_anchored), the input string str, and case_sensitive flag. Uses nfa_match() from P1.M2.T2.S2 and pattern_char_matches() from P1.M3.T2.S1 (transitively, through nfa_match).\n3. LOGIC: (a) match_string_with_start(pattern, str, string_start, cs) = nfa_match(pattern, str, string_start, cs, false) [prefix/substring]. (b) match_reaches_end_with_start(pattern, str, string_start, cs) = nfa_match(pattern, str, string_start, cs, true) [full match]. (c) match_with_anchors(parsed, str, cs): if both anchored→match_reaches_end_with_start(core, str, str, cs) [exact]. If start only→match_string_with_start(core, str, str, cs) [prefix]. If end only→loop i=0..len, match_reaches_end_with_start(core, str+i, str, cs), first hit wins. If neither→empty core special case (matches only empty string); else loop i=0..len, match_string_with_start(core, str+i, str, cs), first hit wins [substring, backward-compat default].\n4. OUTPUT: bool result consumed by the public pattern_match() entry point (P1.M1.T2.S2). This replaces the stub from P1.M1.T2.S2 — now the full matcher pipeline works end-to-end.\n5. DOCS: [Mode A] Add a comment table documenting the four anchor strategies per PRD §7.4."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M4",
+          "title": "Host-Side Test Suite (9 programs + test runner)",
+          "status": "Planned",
+          "description": "Implement the 9 host-side test programs and the test runner. All tests link only pattern_match.c (not notifier.c). Each suite uses the test_case_t / run_test pattern from PRD §11.4. Total: ~1826 assertions, all must pass.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M4.T1",
+              "title": "Core Pattern Tests",
+              "status": "Planned",
+              "description": "Implement the main pattern-matching test suite (376 cases) and the character classification + metachar verification tests.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T1.S1",
+                  "title": "Implement test_pattern_match.c (376 cases)",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M3.T2.S2"],
+                  "prd_selectors": ["h2.11/h3.41", "h2.11/h3.42", "h2.15", "h2.11/h3.40"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/findings_and_risks.md for current test results. The test framework uses test_case_t {pattern, input, case_sensitive, expected, description} tables with a run_test() helper that prints PASS:/FAIL: and a summary line 'Total tests run: N / Tests passed: P / Tests failed: F'.\n2. INPUT: pattern_match() from P1.M3.T2.S2 (the complete matcher pipeline).\n3. LOGIC: Create test_pattern_match.c with: #include <stdio.h>, <stdbool.h>, <string.h>, \"pattern_match.h\". Define test_case_t struct. Implement run_test(test_case_t) helper. Write 376 test cases organized in categories: start anchor (^), end anchor ($), both anchors (^...$), escape sequences (\\^ \\$ \\* \\\\), case sensitivity, parsing edge cases, wildcards, metacharacters with anchors/wildcards, word-boundary escape processing. Each case calls pattern_match and compares to expected. Print PASS:/FAIL: per case, summary at end. Must compile: gcc -o test_pattern_match test_pattern_match.c pattern_match.c.\n4. OUTPUT: A standalone test binary that prints test results in the PASS:/FAIL: format with summary counts. Exit code non-zero on any failure.\n5. DOCS: [Mode A] Add a header comment documenting the test count and coverage categories."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T1.S2",
+                  "title": "Implement test_char_classification.c (179 cases) + test_metachar_verification.c (smoke test)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M4.T1.S1"],
+                  "prd_selectors": ["h2.11/h3.41", "h2.11/h3.42", "h2.15"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: test_char_classification tests digit/word/whitespace classification indirectly via metachars (\\d, \\D, \\w, \\W, \\s, \\S). test_metachar_verification is a boolean PASS/FAIL smoke test (no counting, just printf).\n2. INPUT: pattern_match() from P1.M3.T2.S2.\n3. LOGIC: (a) test_char_classification.c: same test_case_t/run_test framework. 179 cases testing \\d/\\D/\\w/\\W/\\s/\\S against various inputs. Compile: gcc -o test_char_classification test_char_classification.c pattern_match.c. (b) test_metachar_verification.c: simpler format using printf(\"%s\\n\", pattern_match(...) ? \"PASS\" : \"FAIL\") for each test. Tests \\d, \\D, \\w, \\W, \\s, \\S basics, case sensitivity, combos like ^\\d\\w$, \\s*, \\w*\\d. Compile: gcc -o test_metachar_verification test_metachar_verification.c pattern_match.c.\n4. OUTPUT: Two standalone test binaries with summary output.\n5. DOCS: none — test programs are self-documenting via their printf output."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M4.T2",
+              "title": "Word Boundary & Integration Tests",
+              "status": "Planned",
+              "description": "Implement the word-boundary test suites and the comprehensive integration test.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T2.S1",
+                  "title": "Implement test_word_boundary_basic.c (74 cases) + test_word_boundary_integration.c (189 cases)",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M4.T1.S1"],
+                  "prd_selectors": ["h2.11/h3.41", "h2.11/h3.42", "h2.7/h3.26", "h2.15"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Word boundary tests verify \\b and \\B semantics: boundary at string start if first char is word char, at end if last char is word char, interior where word/non-word transitions occur.\n2. INPUT: pattern_match() from P1.M3.T2.S2.\n3. LOGIC: (a) test_word_boundary_basic.c: 74 cases testing basic \\b/\\B: \\bword at start, after non-word, after word (no match); word\\b at end; \\B between word chars; \\B at non-word positions. Compile: gcc -o test_word_boundary_basic test_word_boundary_basic.c pattern_match.c. (b) test_word_boundary_integration.c: 189 cases testing \\b/\\B integrated with anchors (^\\b...), wildcards (*\\b*), character classes (\\b\\w+\\b\\s+\\b\\w+\\b). Compile: gcc -o test_word_boundary_integration test_word_boundary_integration.c pattern_match.c.\n4. OUTPUT: Two standalone test binaries with summary output in PASS:/FAIL: format.\n5. DOCS: none — test programs are self-documenting."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T2.S2",
+                  "title": "Implement test_comprehensive_integration.c (10 categories, -DNOTIFIER_STUB)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M4.T2.S1"],
+                  "prd_selectors": ["h2.11/h3.41", "h2.11/h3.42", "h2.3"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The -DNOTIFIER_STUB macro is vestigial (PRD §3, acknowledged). It is passed harmlessly. This suite uses a different framework: run_test_with_perf() with function pointers and performance tracking. ~449 lines.\n2. INPUT: pattern_match() from P1.M3.T2.S2.\n3. LOGIC: Create test_comprehensive_integration.c with 10 categories: complex metachar combinations (\\d\\w\\s, \\D\\W\\S mixes), anchors+classes, wildcards+metachars, performance tests (timing pattern_match calls), memory management verification (repeated alloc/free), multi-feature combos. Uses test_pattern_with_memory() helper. Compile: gcc -o test_comprehensive_integration test_comprehensive_integration.c pattern_match.c -std=c99 -DNOTIFIER_STUB.\n4. OUTPUT: Standalone test binary with PASSED/FAILED output including timing. Exit code non-zero on failure.\n5. DOCS: none — test program is self-documenting."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M4.T3",
+              "title": "Robustness & Error-Handling Tests",
+              "status": "Planned",
+              "description": "Implement the error-handling, memory-stress, and invalid-pattern test suites that verify no input can crash the matcher.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T3.S1",
+                  "title": "Implement test_error_handling.c + test_memory_stress.c",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M4.T1.S1"],
+                  "prd_selectors": ["h2.11/h3.41", "h2.11/h3.42", "h2.12", "h2.13"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: These suites verify PRD §12 robustness (NULL→false, garbage→survival) and memory safety (no leaks/crashes on repeated alloc/free). They compile with -I. for pattern_match.h access.\n2. INPUT: pattern_match() from P1.M3.T2.S2.\n3. LOGIC: (a) test_error_handling.c: tests NULL pattern, NULL input, both NULL, invalid escape sequences (\\q, \\0, \\9, \\n-as-literal), trailing backslash, garbage bytes, non-ASCII. Survival/case-count format. Compile: gcc -o test_error_handling test_error_handling.c pattern_match.c -I. (b) test_memory_stress.c: tests extremely long patterns (malloc 10000 bytes), repeated pattern_match calls in loops (no leaks), boundary-size inputs. Survival format. Compile: gcc -o test_memory_stress test_memory_stress.c pattern_match.c -I.\n4. OUTPUT: Two standalone test binaries verifying robustness and memory safety.\n5. DOCS: none — test programs are self-documenting."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T3.S2",
+                  "title": "Implement test_invalid_patterns.c (1008 cases)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M4.T3.S1"],
+                  "prd_selectors": ["h2.11/h3.41", "h2.11/h3.42", "h2.12", "h2.13", "h2.15"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: 1008 cases = 46 pathological/unimplemented patterns × many inputs. Tests unmatched brackets/parens (treated as literal), invalid quantifiers (? { } treated as literal), incomplete ranges, and 920 combination cases. All must be handled gracefully (no crash).\n2. INPUT: pattern_match() from P1.M3.T2.S2.\n3. LOGIC: Create test_invalid_patterns.c with test_pattern() helper. Test categories: unmatched brackets ([abc, abc], [, ], [], [^]), unmatched parens, invalid quantifiers (a?, a{3}, +, ?, {}), invalid character classes ([a-, [z-a], [-a]), invalid escapes (\\, \\q, \\0, \\9), mixed invalid constructs, and 920 combination cases using programmatic generation. Compile: gcc -o test_invalid_patterns test_invalid_patterns.c pattern_match.c -I.\n4. OUTPUT: Standalone test binary printing summary 'Total tests run: 1008 / Tests passed: P / Tests failed: F'.\n5. DOCS: none — test program is self-documenting."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M4.T4",
+              "title": "Test Runner Script (run_all_tests.sh)",
+              "status": "Planned",
+              "description": "Implement the shell script that builds all 9 test suites, runs them, aggregates results, and runs a performance micro-benchmark.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T4.S1",
+                  "title": "Implement run_all_tests.sh",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M4.T1.S2", "P1.M4.T2.S2", "P1.M4.T3.S2"],
+                  "prd_selectors": ["h2.11", "h2.11/h3.39", "h2.11/h3.40", "h2.11/h3.41", "h2.17"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/findings_and_risks.md for expected results: 1826 total assertions, 0 failures, perf ~0.1µs/call. The script must use the EXACT gcc flags from PRD §11.1.\n2. INPUT: All 9 test .c files from P1.M4.T1-T3.\n3. LOGIC: Create run_all_tests.sh (#!/bin/bash, chmod +x). (a) Compile all 9 suites with EXACT flags from PRD §11.1: test_pattern_match (no flags), test_char_classification (no flags), test_word_boundary_basic (no flags), test_word_boundary_integration (no flags), test_metachar_verification (no flags), test_comprehensive_integration (-std=c99 -DNOTIFIER_STUB), test_error_handling (-I.), test_memory_stress (-I.), test_invalid_patterns (-I.). (b) Run each suite, capture output. (c) Extract 'Total tests run:', 'Tests passed:', 'Tests failed:' from each summary. (d) Aggregate totals across all suites. (e) Print OVERALL TEST SUMMARY. (f) Build and run perf_test.c (100000 iterations × 7 patterns, check < 1 second). (g) Exit 0 iff total_failed==0, else exit 1.\n4. OUTPUT: An executable shell script that validates the entire pattern matching library in one command. Expected output: 'Total tests run across all suites: 1826 / Total tests passed: 1826 / Total tests failed: 0'.\n5. DOCS: none — the script output IS the documentation."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P2",
+      "title": "QMK Firmware Module (notifier.{c,h}, rules.mk)",
+      "status": "Planned",
+      "description": "Build the on-keyboard receiver, reassembler, delimiter-aware matcher, and rule dispatcher. notifier.c #includes pattern_match.c directly (same translation unit). This phase depends on Phase 1 being complete. notifier.c cannot be compiled standalone (depends on QMK symbols) — it is only validated on-device or via stub-compile.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P2.M1",
+          "title": "Public API & Build Integration",
+          "status": "Planned",
+          "description": "Write the public header consumed by user keymaps and the 2-line rules.mk that integrates with QMK.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M1.T1",
+              "title": "notifier.h — Public API Header",
+              "status": "Planned",
+              "description": "Write the public header with structs, macros, constants, accessor declarations, and entry-point declarations.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T1.S1",
+                  "title": "Write notifier.h with structs, macros, constants, accessors, entry points",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.5", "h2.5/h3.16", "h2.5/h3.17", "h2.5/h3.18", "h2.5/h3.19", "h2.5/h3.20", "h2.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/notifier_architecture.md §Public API. CRITICAL: The GS_DELIMITER comment must say 'Group Separator' (0x1D = decimal 29), NOT 'Unit Separator' (which is 0x1F = decimal 31). This is a known bug in the current codebase (notifier.h:22) — see plan/001_e329fbe4ae4d/architecture/findings_and_risks.md DRIFT-1. The byte value 0x1D is correct; only the comment was wrong.\n2. INPUT: None — this is a standalone header.\n3. LOGIC: Create notifier.h with: (a) #pragma once, #include <stdbool.h>. (b) typedef void (*callback_t)(void). (c) command_map_t { const char *pattern; callback_t on_enable; callback_t on_disable; const bool case_sensitive; }. (d) layer_map_t { const char *pattern; const int layer; const bool case_sensitive; }. (e) Four accessor declarations: get_command_map, get_command_map_size, get_layer_map, get_layer_map_size. (f) Constants: GS_DELIMITER=\"\\x1D\" with comment 'ASCII 29 (Group Separator)'; ETX_TERMINATOR=\"\\x03\" with comment 'ASCII 3 (End of Text)'. (g) WINDOW_TITLE(classname, title) macro = classname GS_DELIMITER title. WT(...) = WINDOW_TITLE(__VA_ARGS__). (h) DEFINE_SERIAL_COMMANDS(...) and DEFINE_SERIAL_LAYERS(...) macros from PRD §5.4. (i) Entry point declarations: raw_hid_receive, hid_notify. ~42 lines.\n4. OUTPUT: notifier.h — the public API consumed by user keymaps via #include \"./qmk-notifier/notifier.h\".\n5. DOCS: [Mode A] The GS_DELIMITER comment must correctly say 'Group Separator' (fixing the known DRIFT-1 bug). The DEFINE_SERIAL_* macro doc comments should note that omitted trailing struct fields are zero-filled."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M1.T2",
+              "title": "rules.mk — QMK Build Integration",
+              "status": "Planned",
+              "description": "Write the 2-line rules.mk that enables Raw HID and adds the notifier source.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T2.S1",
+                  "title": "Write rules.mk",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.9", "h2.4/h3.11", "h2.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/external_deps.md §SRC += in rules.mk. Verified: RAW_ENABLE gates Raw HID code via #ifdef; SRC += accumulates into the global SRC variable. The SRC path 'qmk-notifier/notifier.c' is relative to the keyboard directory where the submodule is placed.\n2. INPUT: None.\n3. LOGIC: Create rules.mk with exactly two lines: 'RAW_ENABLE = yes' and 'SRC += qmk-notifier/notifier.c'. The first enables QMK's Raw HID feature (usage page 0xFF60 / usage 0x61, 32-byte reports). The second compiles notifier.c (which itself #includes pattern_match.c). Do NOT hand-write 'SRC += lib/...' or point at 'qmk_notifier.c' (underscore) — that fails to link.\n4. OUTPUT: A 2-line Makefile fragment included by the user's keymap rules.mk via 'include keyboards/.../qmk-notifier/rules.mk'.\n5. DOCS: none — 2-line file, self-explanatory."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M2",
+          "title": "Receiver, Reassembler & Dispatcher",
+          "status": "Planned",
+          "description": "Implement the complete notifier.c: constants, globals, sanitization, weak defaults, layer/command state machines, delimiter-aware matching, dispatcher, and entry point.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M2.T1",
+              "title": "Constants, Globals, Weak Defaults & Sanitization",
+              "status": "Planned",
+              "description": "Implement the foundational constants, static globals, weak default map accessors, and the sanitize_string function.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T1.S1",
+                  "title": "Implement constants, globals, weak default maps, sanitize_string()",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M1.T1.S1", "P1.M1.T2.S2"],
+                  "prd_selectors": ["h2.8/h3.30", "h2.8/h3.31", "h2.8/h3.32", "h2.2/h3.9", "h2.4/h3.12", "h2.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/notifier_architecture.md §Constants & Globals and §sanitize_string. Include order is CRITICAL: #include QMK_KEYBOARD_H, #include \"pattern_match.c\" (the .c!), #include \"notifier.h\", #include \"raw_hid.h\", #include <string.h>, (#include \"print.h\" under CONSOLE_ENABLE).\n2. INPUT: notifier.h from P2.M1.T1.S1. pattern_match.c is #included directly (not pattern_match.h).\n3. LOGIC: (a) Define RAW_REPORT_SIZE 32 (with the load-bearing comment: 'This is 32 bytes on every QMK USB protocol — and is NOT RAW_EPSIZE. V-USB has 8-byte endpoint but reassembles into 32. 32 is the single value raw_hid_send accepts on any board.'). (b) Define MSG_BUFFER_SIZE 256, LAYER_UNSET 255. (c) static char msg_buffer[256]; static uint16_t msg_index = 0; uint8_t activated_layer = LAYER_UNSET; command_map_t *current_command = {0}. (d) Weak default maps: static command_map_t empty_command_map[1] = {0}; static layer_map_t empty_layer_map[1] = {0}; Four __attribute__((weak)) accessors returning the empty maps / size 0. (e) sanitize_string(char *str): single pass read/write pointers. Keep byte iff (b>=32 && b<=126) || b==9 || b==10 || b==13 || b==0x1D || b==0x03. NUL-terminate at write pointer. NULL→return.\n4. OUTPUT: The foundational layer of notifier.c — constants, globals, sanitization, and weak defaults.\n5. DOCS: [Mode A] The RAW_REPORT_SIZE comment must explain the 32-vs-RAW_EPSIZE distinction per PRD §8.1."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M2.T2",
+              "title": "Layer & Command State Machines",
+              "status": "Planned",
+              "description": "Implement activate_layer, deactivate_layer, enable_command, disable_command — the state machine wrappers around QMK's layer_on/off and user callbacks.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T2.S1",
+                  "title": "Implement activate_layer(), deactivate_layer(), enable_command(), disable_command()",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M2.T1.S1"],
+                  "prd_selectors": ["h2.8/h3.33", "h2.2/h3.7", "h2.13"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/notifier_architecture.md §Layer & Command State Machines. These wrap QMK's layer_on/layer_off (from action_layer.h, available via QMK_KEYBOARD_H). Debug uprintf only under CONSOLE_ENABLE.\n2. INPUT: activated_layer and current_command globals from P2.M2.T1.S1. QMK's layer_on/layer_off functions.\n3. LOGIC: (a) activate_layer(uint8_t layer): layer_on(layer); activated_layer = layer. Debug print under CONSOLE_ENABLE. (b) deactivate_layer(void): if activated_layer == LAYER_UNSET return; layer_off(activated_layer); activated_layer = LAYER_UNSET. (c) enable_command(command_map_t *command): current_command = command; command->on_enable(). (d) disable_command(void): if current_command != NULL && current_command->on_disable != NULL: call on_disable(); current_command = NULL.\n4. OUTPUT: Four void functions that manage layer and command state transitions.\n5. DOCS: [Mode A] Comment the ordering guarantees: deactivate-before-activate and disable-before-enable (PRD §13 invariants #4, #6)."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M2.T3",
+              "title": "Delimiter-Aware Matching (match_pattern + helpers)",
+              "status": "Planned",
+              "description": "Implement the internal match_pattern function and its delimiter helpers. This applies the firmware's two-part (class|title) matching semantics on top of the public pattern_match.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T3.S1",
+                  "title": "Implement find_first_delimiter(), split_by_delimiter(), match_pattern()",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M2.T1.S1", "P1.M3.T2.S2"],
+                  "prd_selectors": ["h2.8/h3.34", "h2.2/h3.6", "h2.4/h3.10", "h2.13"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/notifier_architecture.md §match_pattern. CRITICAL BUG FIX: The current codebase has BUG-1 (see findings_and_risks.md) where find_first_delimiter(pattern) is called BEFORE the NULL guard, causing a segfault on NULL pattern. In a rebuild, the NULL guard MUST come first: if (message == NULL || pattern == NULL) return false; THEN call find_first_delimiter(pattern). This is the contract from PRD §8.5 step 2.\n2. INPUT: pattern_match() from P1.M3.T2.S2. GS_DELIMITER from notifier.h.\n3. LOGIC: (a) find_first_delimiter(const char *str): loop through str, return pointer to first GS_DELIMITER[0] (0x1D) or NULL. (b) split_by_delimiter(source, delimiter_pos, left, left_size, right, right_size): left_len = delimiter_pos - source; if left_len >= left_size return false; strncpy(left, source, left_len); NUL-terminate. Copy right part (after delimiter) with truncation guard. Return true on success. (c) match_pattern(pattern, message, case_sensitive): NULL GUARD FIRST (if message==NULL || pattern==NULL return false). Then find_first_delimiter(pattern). If no delim in pattern: if message has delim→match pattern against class half only; else→direct pattern_match. If delim in pattern: if message has no delim→match pattern's class half vs whole message; if both have delim→split both, AND-match left vs left and right vs right. All buffer copies use 256-byte stack buffers with truncation guards (>=256→false).\n4. OUTPUT: bool match_pattern() — the internal delimiter-aware matcher called by process_full_message. Implements F4.1-F4.4 semantics.\n5. DOCS: [Mode A] Comment each F4 branch (F4.1: both have delim→two-part AND; F4.2: no-delim pattern vs delim message→class-only; F4.3: delim pattern vs no-delim message→class-half vs whole; F4.4: neither→direct). Reference PRD §F4."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M2.T4",
+              "title": "Dispatcher & Entry Point (process_full_message, hid_notify)",
+              "status": "Planned",
+              "description": "Implement the message dispatcher with its ordering invariants and the Raw HID entry point with coexistence guard, reassembly, and acknowledgement.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T4.S1",
+                  "title": "Implement process_full_message() — the dispatcher",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M2.T2.S1", "P2.M2.T3.S1"],
+                  "prd_selectors": ["h2.8/h3.35", "h2.2/h3.7", "h2.13", "h2.2/h3.8"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/notifier_architecture.md §process_full_message. The ordering invariants are CRITICAL (PRD §13 #4, #5, #6, #7): disable-before-scan, deactivate-before-activate, first-match-wins, exactly-one-active-layer, unmatched-clears-state.\n2. INPUT: char *data (the fully-reassembled, sanitized message). match_pattern() from P2.M2.T3.S1. enable/disable_command from P2.M2.T2.S1. activate/deactivate_layer from P2.M2.T2.S1. get_command_map/Size, get_layer_map/Size from weak defaults in P2.M2.T1.S1.\n3. LOGIC: (1) length = strlen(data); if length >= 256 return false. (2) memcpy into local received_command[256]; NUL-terminate. (3) disable_command() — ALWAYS FIRST. (4) Scan command_map: for i=0..size, if match_pattern(map[i].pattern, received_command, map[i].case_sensitive)→remember index+pointer, break. (5) Scan layer_map: same, first match wins. (6) deactivate_layer() — ALWAYS before activate. (7) If command found: enable_command(it) — fires on_enable. (8) If layer found: activate_layer(it) — layer_on. (9) CONSOLE_ENABLE: print match/miss with GS shown as '|'. (10) Return (command_found || layer_found).\n4. OUTPUT: bool — true if any command or layer matched. This drives the acknowledgement byte.\n5. DOCS: [Mode A] Comment the ordering invariants explicitly: 'disable-before-scan, deactivate-before-activate'. Reference PRD §13 #4."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T4.S2",
+                  "title": "Implement hid_notify() — the Raw HID entry point",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M2.T4.S1"],
+                  "prd_selectors": ["h2.8/h3.36", "h2.2/h3.3", "h2.2/h3.4", "h2.2/h3.8", "h2.4/h3.12", "h2.4/h3.13", "h2.13"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/notifier_architecture.md §hid_notify. The coexistence guard (0x81 0x9F) is PRD §13 invariant #1. RAW_REPORT_SIZE=32 is invariant #3. The response is sent once per report, not once per message (only the report containing ETX has match==true).\n2. INPUT: uint8_t *data, uint8_t length from QMK's raw_hid_receive hook. msg_buffer/msg_index from P2.M2.T1.S1. process_full_message from P2.M2.T4.S1. sanitize_string from P2.M2.T1.S1. raw_hid_send from QMK.\n3. LOGIC: (1) Coexistence guard: if (length < 2 || data[0] != 0x81 || data[1] != 0x9F) return. (2) data += 2; length -= 2 (strip magic header). (3) match = false. (4) For each byte c in data[0..length): if c == ETX_TERMINATOR[0] (0x03): msg_buffer[msg_index] = '\\0'; sanitize_string(msg_buffer); msg_index = 0; match = process_full_message(msg_buffer); break. Else: if msg_index < MSG_BUFFER_SIZE-1: msg_buffer[msg_index++] = c; else: msg_index = 0 (overflow: drop message, reset). (5) uint8_t response[RAW_REPORT_SIZE] = {0}; response[0] = match ? 1 : 0; raw_hid_send(response, RAW_REPORT_SIZE).\n4. OUTPUT: void. Side effects: updates msg_buffer/msg_index, activates layers, fires callbacks, sends a 32-byte acknowledgement.\n5. DOCS: [Mode A] Comment the coexistence guard and the multi-report reassembly behavior (bytes accumulate across hid_notify calls until ETX). Note that response is sent once per report."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P3",
+      "title": "Acceptance Gate & Documentation Sync",
+      "status": "Planned",
+      "description": "Run the full acceptance gate (all 9 suites, performance verification, pathological NFA stress) and sync changeset-level documentation (README.md).",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P3.M1",
+          "title": "Acceptance Gate & Documentation",
+          "status": "Planned",
+          "description": "Validate the full acceptance gate and update changeset-level documentation.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P3.M1.T1",
+              "title": "Full Acceptance Gate Validation",
+              "status": "Planned",
+              "description": "Run the complete acceptance gate: all 9 test suites with 0 failures, pathological NFA stress < 50ms, and realistic pattern verification.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T1.S1",
+                  "title": "Validate acceptance gate 11.2A/B/C",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M4.T4.S1", "P2.M2.T4.S2"],
+                  "prd_selectors": ["h2.11", "h2.11/h3.40", "h2.18", "h2.13", "h2.12"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/findings_and_risks.md. Expected: 1826 assertions, 0 failures. Pathological NFA a+a+a+a+a+a+a+a+a+a+b vs 199×a: ~1.6ms (< 50ms gate). Known PRD error: acceptance gate 11.2C test #3 (pattern_match(\"^\\\\w+@\\\\w+$\", \"user_host\", 1)) returns 0, NOT the PRD's expected 1. This is CORRECT — user_host has no '@' character. The PRD annotation is wrong (DRIFT-2). Do NOT change the code to match the wrong annotation.\n2. INPUT: The complete codebase (all source files from P1-P2, all tests from P1.M4).\n3. LOGIC: (A) Run ./run_all_tests.sh — verify 0 failures across all 9 suites. (B) Build and run the pathological stress test (/tmp/nfa_stress.c from PRD §11.2B): a+a+a+a+a+a+a+a+a+a+b vs 199×a must print result=0 in < 50ms. (C) Build and run the realistic patterns test (/tmp/nfa_real.c from PRD §11.2C): five of six must print 1 (the third, ^\\w+@\\w+$ vs user_host, correctly prints 0 — see DRIFT-2). (D) Verify every invariant in PRD §13 holds. (E) Verify no new compiler warnings.\n4. OUTPUT: A passing acceptance gate: 1826/1826 tests, pathological stress < 50ms, realistic patterns verified.\n5. DOCS: [Mode A] Document the DRIFT-2 finding (PRD §11.2C test #3 annotation is wrong) in a comment or note. The code is correct; the PRD annotation should be /* 0 */ not /* 1 */."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P3.M1.T2",
+              "title": "Sync Changeset-Level Documentation",
+              "status": "Planned",
+              "description": "Update README.md and any overview documentation to reflect the current state of the codebase, including correct test counts, pattern syntax, and companion project references.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T2.S1",
+                  "title": "Update README.md — test counts, pattern syntax, GS_DELIMITER, companion projects",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S1", "P1.M1.T2.S1", "P1.M1.T2.S2", "P1.M2.T1.S1", "P1.M2.T1.S2", "P1.M2.T2.S1", "P1.M2.T2.S2", "P1.M3.T1.S1", "P1.M3.T2.S1", "P1.M3.T2.S2", "P1.M4.T1.S1", "P1.M4.T1.S2", "P1.M4.T2.S1", "P1.M4.T2.S2", "P1.M4.T3.S1", "P1.M4.T3.S2", "P1.M4.T4.S1", "P2.M1.T1.S1", "P2.M1.T2.S1", "P2.M2.T1.S1", "P2.M2.T2.S1", "P2.M2.T3.S1", "P2.M2.T4.S1", "P2.M2.T4.S2", "P3.M1.T1.S1"],
+                  "prd_selectors": ["h2.10", "h2.17", "h2.11/h3.41", "h2.15", "h2.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/findings_and_risks.md. The current README.md has STALE test counts ('1,992/2,048 tests passing (97.2%)' and '383/263' per-suite) that must be updated to the live counts (1826 total, 0 failures, 100%). The README also has an incomplete pattern syntax section that doesn't mention \\d \\w \\s \\b . + which are now implemented. The GS_DELIMITER is documented as 'Group Separator' in the code but the README doesn't specify the byte value.\n2. INPUT: All implementing subtasks (P1.* and P2.* and P3.M1.T1.S1). The current README.md content.\n3. LOGIC: Update README.md: (a) Test Status section: update to '1,826/1,826 tests passing (100% success rate)' and '0 failures'. Remove the stale '1,992/2,048' and '97.2%' figures. (b) Running Tests section: update test counts to match PRD §11.3 live counts (test_pattern_match: 376, test_char_classification: 179, test_word_boundary_basic: 74, test_word_boundary_integration: 189, test_invalid_patterns: 1008). Remove stale '383 tests' and '263 tests'. (c) Pattern Matching Syntax section: add the full construct list from PRD §15 Appendix A — *, ^, $, \\d \\D, \\w \\W, \\s \\S, \\b \\B, ., X+, and the backward-compatible substring default. (d) Ensure the GS_DELIMITER is documented as 'Group Separator, ASCII 29 (0x1D)' not 'Unit Separator'. (e) Verify the Setup section matches PRD §10.1 integration steps.\n4. OUTPUT: An updated README.md with accurate test counts, complete pattern syntax documentation, and correct GS_DELIMITER naming.\n5. DOCS: [Mode B] This IS the documentation sync task — it updates README.md to reflect the entire changeset. All per-file docs (Mode A) were handled in their respective implementing subtasks."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
