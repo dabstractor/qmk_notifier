@@ -632,28 +632,28 @@
       "type": "Phase",
       "id": "P3",
       "title": "Acceptance Gate & Documentation Sync",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Run the full acceptance gate (all 9 suites, performance verification, pathological NFA stress) and sync changeset-level documentation (README.md).",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P3.M1",
           "title": "Acceptance Gate & Documentation",
-          "status": "Planned",
+          "status": "Complete",
           "description": "Validate the full acceptance gate and update changeset-level documentation.",
           "tasks": [
             {
               "type": "Task",
               "id": "P3.M1.T1",
               "title": "Full Acceptance Gate Validation",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Run the complete acceptance gate: all 9 test suites with 0 failures, pathological NFA stress < 50ms, and realistic pattern verification.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P3.M1.T1.S1",
                   "title": "Validate acceptance gate 11.2A/B/C",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M4.T4.S1",
@@ -674,14 +674,14 @@
               "type": "Task",
               "id": "P3.M1.T2",
               "title": "Sync Changeset-Level Documentation",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Update README.md and any overview documentation to reflect the current state of the codebase, including correct test counts, pattern syntax, and companion project references.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P3.M1.T2.S1",
                   "title": "Update README.md — test counts, pattern syntax, GS_DELIMITER, companion projects",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",

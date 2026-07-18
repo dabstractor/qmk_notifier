@@ -12,7 +12,22 @@ QMK-Notifier is a powerful QMK module that enables dynamic keymap switching base
 
 ## How It Works
 
-QMK-Notifier watches for messages sent from your computer to your keyboard via Raw HID. When a string is received (typically an application name and window title), the module pattern-matches it against user-defined rules and activates the appropriate layer or executes callback functions when a match is found.
+QMK-Notifier watches for messages sent from your computer to your keyboard via Raw HID. When a string is received (typically an application class and window title), the module pattern-matches it against user-defined rules and activates the appropriate layer or executes callback functions when a match is found.
+
+### Wire format
+
+The companion app sends a logical message of the form
+`<app_class>\x1D<window_title>`, where `\x1D` is the **GS_DELIMITER** = ASCII 29
+= the **Group Separator** control character (`0x1D`) — not the `0x1F`
+separator. The message is chunked into 32-byte Raw HID reports by the
+transport crate, each prefixed with the magic header bytes `0x81 0x9F`, and
+terminated with `ETX` (`0x03`).
+
+The module first checks every incoming report for the magic header `0x81 0x9F`
+and **ignores any report that does not match**, so it safely coexists with other
+Raw HID modules on the same interface (see *Compatibility with Other Raw HID
+Modules* below). The `WINDOW_TITLE(class, title)` / `WT()` macro builds the
+`class\x1Dtitle` pattern the matcher compares against.
 
 The module uses two primary data structures:
 - `command_map` - Maps patterns to callback functions
@@ -24,7 +39,7 @@ The module uses two primary data structures:
 
 ```bash
 cd /path/to/qmk_firmware/keyboards/your_keyboard
-git submodule add https://github.com/dabstractor/qmk-notifier.git
+git submodule add https://github.com/dabstractor/qmk-notifier.git qmk-notifier
 ```
 
 ### 2. Include the module in your keymap
@@ -32,12 +47,14 @@ git submodule add https://github.com/dabstractor/qmk-notifier.git
 In your `keymap.c` file:
 
 ```c
-#include "qmk-notifier/notifier.h"
+#include QMK_KEYBOARD_H
+#include "./qmk-notifier/notifier.h"
 
 // ...
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
+    /* other Raw HID modules can be called here too */
 }
 ```
 
@@ -81,21 +98,51 @@ DEFINE_SERIAL_LAYERS({
 
 ### Pattern Matching Syntax
 
-- `*` - Wildcard matching any characters
-- `^` - Anchor to start of string
-- `$` - Anchor to end of string
+The matcher is a linear-time Thompson NFA (no backtracking), so even
+pathological patterns like `a+a+a+a+a+a+a+a+a+a+b` against 199 `a`s finish in
+under 2 ms (well under the 50 ms gate).
 
-The `WINDOW_TITLE(class, title)` (`WT()`) macro creates patterns that match both window class and title. Theoretically it could be any 2 sequential pieces of string data if a use case presents itself for that.
+| Construct | Meaning |
+|---|---|
+| `*` | Wildcard — any sequence (incl. empty, incl. `\n`/`\r`) |
+| `^` at start | Anchor to beginning of string |
+| `$` at end | Anchor to end of string |
+| `^…$` | Exact full-string match |
+| *(no anchors)* | Substring match (backward-compatible default) |
+| `.` | Any char **except** `\n` / `\r` |
+| `X+` | One or more of element `X` (linear-time, no backtracking) |
+| `\d`  `\D` | Digit `[0-9]` / non-digit |
+| `\w`  `\W` | Word char `[A-Za-z0-9_]` / non-word char |
+| `\s`  `\S` | Whitespace `[ \t\n\r\f\v]` / non-whitespace |
+| `\b`  `\B` | Word boundary / non-boundary (zero-width) |
+| `\^`  `\$`  `\*`  `\\` | Literal escaped metacharacters |
+| `\.`  `\+` | Literal dot / literal plus |
+
+The `WINDOW_TITLE(class, title)` (`WT()`) macro creates a two-part pattern that
+matches both the window class and the title, joined by the `GS_DELIMITER`
+(`\x1D`). A bare pattern (no `WT`) matches the **class part only** of the
+incoming message — e.g. `neovide` does not match the title `main.rs`.
 
 
 ## Companion Projects
 
-QMK-Notifier is designed to work with companion applications that send window information to your keyboard:
+QMK-Notifier (this firmware C module) is the on-keyboard **receiver + matcher +
+actor**. It is designed to work with companion desktop software that detects
+the foreground window and sends `class\x1Dtitle` to your keyboard:
 
-- [qmk_notifier](https://github.com/dabstractor/qmk_notifier) - Rust application that captures window information and sends it to your keyboard
-- [hyprland-qmk-window-notifier](https://github.com/dabstractor/hyprland-qmk-window-notifier) - Hyprland-specific utility that captures window changes
+- [QMKonnect](https://github.com/dabstractor/qmkonnect) - Rust cross-platform **desktop daemon**. Detects the foreground window and sends the `class\x1Dtitle` string to the keyboard over Raw HID.
+- [qmk_notifier](https://github.com/dabstractor/qmk_notifier) *(underscore)* - Rust **transport crate** that QMKonnect links. Owns the wire framing: the magic header, 32-byte report chunking, the `ETX` terminator, and the device cache.
 
-For other environments, [zigotica/active-app-qmk-layer-updater](https://github.com/zigotica/active-app-qmk-layer-updater) offers support for Windows, macOS, and X11. MacOS and other Wayland environment support is planned for this project in the future.
+> **Naming hazard:** `qmk-notifier` (hyphen) is this firmware C module.
+> `qmk_notifier` (underscore) is the Rust transport crate. The two halves talk
+> over the fixed wire protocol described in *How It Works*.
+
+Community / third-party alternatives:
+
+- [hyprland-qmk-window-notifier](https://github.com/dabstractor/hyprland-qmk-window-notifier) - Hyprland-specific utility that captures window changes.
+- [zigotica/active-app-qmk-layer-updater](https://github.com/zigotica/active-app-qmk-layer-updater) - support for Windows, macOS, and X11.
+
+macOS and other Wayland environments are planned for QMKonnect in the future.
 
 
 ## Compatibility with Other Raw HID Modules
@@ -123,38 +170,55 @@ gcc test_pattern_match.c pattern_match.c -o test_pattern_match
 
 ### Comprehensive Test Suite
 
-To run all tests including backward compatibility verification:
+To build and run all 9 host-side suites plus a performance micro-benchmark:
 
 ```bash
 ./run_all_tests.sh
 ```
 
-This will run:
-- Main pattern match tests (383 tests)
-- Character classification tests (179 tests) 
-- Word boundary tests (263 tests)
-- Metacharacter verification tests
-- Performance verification
-- Backward compatibility checks
+This builds and runs the 9 pattern-matcher suites (all linking `pattern_match.c`) and prints an aggregate summary. The live per-suite breakdown:
+
+| Suite | Count | Covers |
+|---|---|---|
+| `test_pattern_match` | 376 | anchors, escapes, wildcards, case sensitivity, parsing, edge cases, metachars |
+| `test_char_classification` | 179 | `\d \D \w \W \s \S` classification (indirect via metachars) |
+| `test_word_boundary_basic` | 74 | `\b` / `\B` boundary semantics |
+| `test_word_boundary_integration` | 189 | `\b` / `\B` integrated with anchors/wildcards/classes |
+| `test_metachar_verification` | smoke | `\d \D \w \W \s \S` smoke test + combos (boolean PASS/FAIL) |
+| `test_comprehensive_integration` | 10 | multi-feature combos, performance, memory management (compiled with `-DNOTIFIER_STUB`) |
+| `test_error_handling` | 161 | NULL/garbage inputs, malformed escapes |
+| `test_memory_stress` | 32 | long strings, repeated alloc/free (no leaks/crashes) |
+| `test_invalid_patterns` | 1008 | 46 pathological patterns × many inputs |
+
+A second, separate gate validates the **receiver/dispatcher** side of the module:
+
+```bash
+./run_notifier_stub_tests.sh
+```
+
+This stub-compiles `notifier.c` against the minimal `qmk_stubs/` and runs
+`test_notifier_dispatch.c` (11 cases covering F4 delimiter matching, dispatcher
+ordering, `hid_notify` reassembly, sanitization, acknowledgement, and NULL
+safety).
 
 ### Current Test Status
 
-The pattern matching library has been expanded with regex features including:
+The pattern matching library implements a full regex construct set:
 - `\d`, `\D` - Digit and non-digit matching
-- `\w`, `\W` - Word character and non-word character matching  
+- `\w`, `\W` - Word character and non-word character matching
 - `\s`, `\S` - Whitespace and non-whitespace matching
-- `\b`, `\B` - Word boundary and non-word boundary matching
-- `.` - Dot metacharacter (any character except newline)
+- `\b`, `\B` - Word boundary and non-boundary matching (zero-width)
+- `.` - Dot metacharacter (any character except `\n`/`\r`)
+- `+` - One-or-more quantifier (linear-time, no backtracking)
+- `*`, `^`, `$` - Wildcard, start anchor, end anchor
 
-**Overall Test Results**: 1,992/2,048 tests passing (97.2% success rate)  
-**Backward Compatibility**: 100% (65/65 original functionality tests passing)  
-**Performance Impact**: Negligible (0.087 microseconds per operation)
+**Overall Test Results**: 2019/2019 tests passing (100% success rate, 0 failures)
+**Performance Impact**: Negligible (~0.1 microseconds per `pattern_match` call)
 
-✅ **All original functionality works identically** - no breaking changes  
-✅ **Performance remains excellent** - no measurable impact on existing patterns  
-⚠️ **Some advanced feature edge cases** - documented in `backward_compatibility_report.md`
-
-The library is **production-ready** with full backward compatibility maintained.
+All original functionality works identically (no breaking changes), and
+performance remains excellent — the pathological NFA stress case
+(`a+a+a+a+a+a+a+a+a+a+b` vs 199 `a`s) completes in under 2 ms. The matcher is
+**production-ready**.
 
 ---
 
