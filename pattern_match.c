@@ -283,8 +283,14 @@ bool pattern_match(const char *pattern, const char *str, bool case_sensitive) {
  * QMK builds override it (e.g. `#define NFA_MAX_PATTERN 64` before #include in
  * notifier.c) to stay within the §7.9 "~6–8 KB" stack budget. State is ~32–40 B
  * on 64-bit, so each unit of NFA_MAX_PATTERN costs ~64–80 B of stack per call. */
-#define NFA_MAX_PATTERN 2048                        /* max processed-pattern length (PRD §7.9: tunable per-target; host/test default, QMK overrides via notifier.c) */
-#define NFA_MAX_STATES  (2 * NFA_MAX_PATTERN + 2)   /* = 4098: 2 per byte + MATCH + slack */
+#ifndef NFA_MAX_PATTERN
+/* Per-target resource knob (PRD §7.9). Host/test default so the stress
+ * suites' multi-KB patterns fit; low-RAM AVR QMK builds `#define NFA_MAX_PATTERN`
+ * (e.g. 64 or 128) BEFORE `#include "pattern_match.c"` in notifier.c, and this
+ * guard makes that override silent (no macro-redefinition warning). */
+#define NFA_MAX_PATTERN 2048                        /* host/test default; QMK overrides via notifier.c */
+#endif
+#define NFA_MAX_STATES  (2 * NFA_MAX_PATTERN + 2)   /* 2 per byte + MATCH + slack (e.g. 4098 at default) */
 
 /* NFA node opcodes (Thompson construction). nfa_compile emits these; nfa_addstate
  * and nfa_match switch on `s->op`. */

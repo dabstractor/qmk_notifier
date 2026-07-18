@@ -182,7 +182,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Character Classification & Anchor Strategy",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Implement the character classification helpers, the single-char predicate, and the anchor-strategy selection logic that ties the NFA to the public API.",
           "tasks": [
             {
