@@ -243,21 +243,20 @@ static void test_comprehensive_error_handling() {
     
     printf("Testing %d problematic patterns against %d different inputs...\n", pattern_count - 1, input_count);
     
-    int crash_count = 0;
     for (int i = 1; i < pattern_count; i++) {  // Skip NULL pattern
         for (int j = 0; j < input_count; j++) {
             tests_run++;
             
             // Just verify that the function doesn't crash
             // We don't care about the result, just that it returns
-            bool result = pattern_match(problematic_patterns[i], test_inputs[j], true);
+            (void)pattern_match(problematic_patterns[i], test_inputs[j], true);
             
             // If we get here, the function didn't crash
             tests_passed++;
             
             // Also test case insensitive
             tests_run++;
-            result = pattern_match(problematic_patterns[i], test_inputs[j], false);
+            (void)pattern_match(problematic_patterns[i], test_inputs[j], false);
             tests_passed++;
         }
     }

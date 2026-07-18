@@ -81,7 +81,7 @@ static char *process_escapes(const char *pattern) {
 }
 
 /* ===== P1.M1.T2.S2: parse_pattern, free_parsed_pattern, get_escaped_char,
- *                     pattern_match (public), match_with_anchors STUB ===== */
+ *                     pattern_match (public); match_with_anchors (PRD §7.4, P1.M3.T2.S2) ===== */
 
 /* Holds the result of parsing a user pattern: anchor flags + the
  * process_escapes()-processed core the NFA consumes. */

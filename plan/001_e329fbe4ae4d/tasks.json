@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Pattern Matching Engine (pattern_match.{c,h})",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Build the Thompson-NFA regex engine and its complete host-side test suite. This is the foundational, independently-testable component. It must compile both as a standalone translation unit (host tests) and when #included by notifier.c (QMK build). All 1826 test assertions must pass.",
       "milestones": [
         {
@@ -259,21 +259,21 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Host-Side Test Suite (9 programs + test runner)",
-          "status": "Planned",
+          "status": "Complete",
           "description": "Implement the 9 host-side test programs and the test runner. All tests link only pattern_match.c (not notifier.c). Each suite uses the test_case_t / run_test pattern from PRD §11.4. Total: ~1826 assertions, all must pass.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "Core Pattern Tests",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the main pattern-matching test suite (376 cases) and the character classification + metachar verification tests.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T1.S1",
                   "title": "Implement test_pattern_match.c (376 cases)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M3.T2.S2"
@@ -290,7 +290,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T1.S2",
                   "title": "Implement test_char_classification.c (179 cases) + test_metachar_verification.c (smoke test)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M4.T1.S1"
@@ -308,14 +308,14 @@
               "type": "Task",
               "id": "P1.M4.T2",
               "title": "Word Boundary & Integration Tests",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the word-boundary test suites and the comprehensive integration test.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T2.S1",
                   "title": "Implement test_word_boundary_basic.c (74 cases) + test_word_boundary_integration.c (189 cases)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M4.T1.S1"
@@ -332,7 +332,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T2.S2",
                   "title": "Implement test_comprehensive_integration.c (10 categories, -DNOTIFIER_STUB)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M4.T2.S1"
@@ -350,14 +350,14 @@
               "type": "Task",
               "id": "P1.M4.T3",
               "title": "Robustness & Error-Handling Tests",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the error-handling, memory-stress, and invalid-pattern test suites that verify no input can crash the matcher.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T3.S1",
                   "title": "Implement test_error_handling.c + test_memory_stress.c",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M4.T1.S1"
@@ -374,7 +374,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T3.S2",
                   "title": "Implement test_invalid_patterns.c (1008 cases)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M4.T3.S1"
@@ -394,14 +394,14 @@
               "type": "Task",
               "id": "P1.M4.T4",
               "title": "Test Runner Script (run_all_tests.sh)",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the shell script that builds all 9 test suites, runs them, aggregates results, and runs a performance micro-benchmark.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T4.S1",
                   "title": "Implement run_all_tests.sh",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M4.T1.S2",

@@ -2,6 +2,14 @@
 test_*
 !test_*.c
 
+# Build artifacts
+dist/
+build/
+
+# Dependency directories
+node_modules/
+venv/
+
 # Environment
 .env
 .env.*
@@ -9,3 +17,6 @@ test_*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local agent harness state
+.pi-subagents/
