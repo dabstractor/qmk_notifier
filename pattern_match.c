@@ -235,3 +235,59 @@ bool pattern_match(const char *pattern, const char *str, bool case_sensitive) {
 
     return result;
 }
+
+/* ===== P1.M2 NFA Engine core definitions (State, ops, sizing) =====
+ * Consumed by nfa_compile() [P1.M2.T1.S2] and nfa_addstate()/nfa_match()
+ * [P1.M2.T2]. Thompson construction; linear-time simulation, no backtracking.
+ * Reference: Russ Cox, "Regular Expression Matching Can Be Simple And Fast",
+ * https://swtch.com/~rsc/regexp/regexp1.html  (see PRD §7.5, §7.9). */
+
+/* Pool sizing. nfa_compile() declares `State pool[NFA_MAX_STATES]` on its stack
+ * (NOT static — the pool must be fresh each call so lastlist starts at 0). At
+ * NFA_MAX_PATTERN=128 that is 258 States (~8 KB on 64-bit, ~5 KB on 32-bit MCUs
+ * — within the §7.9 "~6–8 KB" budget). Lower NFA_MAX_PATTERN for low-RAM AVR. */
+#define NFA_MAX_PATTERN 128                         /* max processed-pattern length */
+#define NFA_MAX_STATES  (2 * NFA_MAX_PATTERN + 2)   /* = 258: 2 per byte + MATCH + slack */
+
+/* NFA node opcodes (Thompson construction). nfa_compile emits these; nfa_addstate
+ * and nfa_match switch on `s->op`. */
+enum {
+    OP_CHAR,   /* consume one input byte that matches `arg`: a processed-pattern
+                 literal (0x01-0x04, 0x2A escaped, ordinary), a class byte
+                 (0x05-0x0A, tested via pattern_char_matches), or the dot 0x0D    */
+    OP_ANY,    /* consume ANY one byte including newline — the glob '*' compiled
+                 as regex '.*' (OP_ANY looping back through an OP_SPLIT)          */
+    OP_SPLIT,  /* epsilon fork: nfa_addstate follows BOTH `out` and `out1` without
+                 consuming input. Implements '*' and '+' quantifiers (zero/one-or-more) */
+    OP_ASSERT, /* zero-width assertion: `arg` is 0x0B (\b, word boundary) or 0x0C
+                 (\B, non-boundary). nfa_addstate recurses into `out` only if
+                 is_word_boundary(string_start, abspos) == (arg == 0x0B)          */
+    OP_MATCH   /* accepting state: the pattern has matched the input up to here.
+                 nfa_addstate adds it to the list; nfa_has_match reports success   */
+};
+
+/* A single NFA node. The typedef-before-definition lets the body name its own
+ * successor pointers as `State *`. Field order matches the reference (PRD §7.5). */
+typedef struct State State;
+struct State {
+    int    op;        /* one of the OP_* opcodes above                                 */
+    char   arg;       /* OP_CHAR: the processed-pattern byte to match; OP_ASSERT: 0x0B/0x0C */
+    State *out;       /* primary outgoing edge (used by every opcode)                 */
+    State *out1;      /* secondary outgoing edge (OP_SPLIT only; NULL for all others) */
+    int    lastlist;  /* generation-tag dedup: equals `nfa_gen` when this state is
+                         already on the CURRENT simulation list, so nfa_addstate
+                         skips it. Bumped indirectly via nfa_gen++ once per step
+                         (nfa_match), which resets the "seen" set each phase.
+                         MANDATORY: without it, OP_SPLIT and repeated \b would
+                         recurse infinitely during epsilon-closure. Pool states are
+                         zero-initialized by nfa_compile, so lastlist starts at 0
+                         (and nfa_gen starts at 0, so the very first closure works). */
+};
+
+/* The ONLY file-scope mutable variable. A monotonic generation tag bumped once
+ * per simulation step (nfa_match) so the lastlist==nfa_gen guard de-dups the
+ * epsilon-closure. Safe because the matcher is single-threaded in QMK (if
+ * reentrancy were ever needed, keep the State arrays on the stack — §7.9).
+ * NOTE: unused until P1.M2.T2.S1 (nfa_addstate) => expect a -Wunused-variable
+ * warning here; it self-resolves when that subtask lands. */
+static int nfa_gen = 0;

@@ -95,14 +95,14 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "NFA Compilation (State struct, ops, nfa_compile)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Define the NFA state machine data structures and implement Thompson construction from the processed-pattern byte string.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Define State struct, ops enum, sizing constants",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M1.T2.S2"
@@ -118,7 +118,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "Implement nfa_compile() — Thompson construction",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S1"
