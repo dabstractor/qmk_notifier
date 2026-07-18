@@ -1,5 +1,18 @@
 // notifier.c
 #include QMK_KEYBOARD_H
+
+/*
+ * Cap the Thompson NFA's processed-pattern budget for the MCU before pulling in
+ * pattern_match.c. The host/test default (NFA_MAX_PATTERN 2048) is sized for the
+ * multi-KB stress patterns but costs ~160 KB of stack per pattern_match() call —
+ * a guaranteed stack smash on a few-KB MCU stack. PRD §7.9/§16 targets
+ * NFA_MAX_PATTERN = 128 (~12 KB stack), which is fine on desktop and RP2040 and
+ * leaves headroom for QMK's own stack frames. This MUST precede the #include so
+ * pattern_match.c's `#ifndef NFA_MAX_PATTERN` guard picks it up silently.
+ * (Fixes validation ISSUE-1 — the ~128 KB/call stack blowup on hardware.)
+ */
+#define NFA_MAX_PATTERN 128
+
 #include "pattern_match.c"
 #include "notifier.h"
 #include "raw_hid.h"
@@ -7,6 +20,12 @@
 #ifdef CONSOLE_ENABLE
 #include "print.h"
 #endif
+
+/* Compile-time guard: if the override above was removed or shadowed, the host
+ * default (2048) would silently take over and smash the MCU stack. This trips a
+ * build error in that case so the regression cannot ship. (Validates ISSUE-1.) */
+typedef char notifier_nfa_pattern_too_large_for_mcu[
+    (NFA_MAX_PATTERN <= 128) ? 1 : -1];
 
 /*
  * Logical size of a QMK Raw HID report exchanged with the host.
@@ -55,6 +74,13 @@ static void sanitize_string(char *str) {
 static char msg_buffer[MSG_BUFFER_SIZE];
 // Current write index into the buffer.
 static uint16_t msg_index = 0;
+// Overflow flag: once set, payload bytes are dropped until the next ETX clears a
+// message boundary. PRD F2.2 requires an oversized message to be dropped in its
+// entirety ("reset the index and drop the message"), not merely truncated and
+// re-buffered. Without this, a >255-byte message splices a bogus suffix into a
+// dispatched message and prefixes leftover bytes onto the next real message.
+// (Fixes validation ISSUE-2 — spurious dispatch + cross-message state bleed.)
+static bool dropping = false;
 
 // Default empty map if user doesn't define them
 static command_map_t empty_command_map[1] = {0};
@@ -103,7 +129,15 @@ void deactivate_layer(void) {
 
 void enable_command(command_map_t *command) {
     current_command = command;
-    command->on_enable();
+    // Guard against a NULL on_enable callback, mirroring the symmetric guard on
+    // on_disable in disable_command(). A keymap entry with a NULL on_enable is a
+    // user misconfiguration; crashing the keyboard (calling NULL()) is a poor
+    // failure mode. on_enable is expected to be present (PRD §10.2 always sets
+    // it), so we simply record the active command and skip the callback.
+    // (Fixes validation ISSUE-3 — SIGSEGV on NULL on_enable.)
+    if (command->on_enable != NULL) {
+        command->on_enable();
+    }
 }
 
 void disable_command(void) {
@@ -331,21 +365,36 @@ void hid_notify(uint8_t *data, uint8_t length) {
         char c = (char)data[i];
         // End of text (ASCII 3) indicates the end of the message.
         if (c == ETX_TERMINATOR[0]) {
-            msg_buffer[msg_index] = '\0'; // Ensure the buffer is properly terminated
-            
-            // Sanitize the buffer to remove non-ASCII characters that could cause decode errors
-            sanitize_string(msg_buffer);
-            
+            // PRD F2.2: an oversized message (one that triggered `dropping`) is
+            // dropped in its entirety — do NOT dispatch its partial buffer, and
+            // do NOT let leftover bytes prefix the next message. Only dispatch
+            // if we were accumulating a clean (non-overflowed) message.
+            if (!dropping) {
+                msg_buffer[msg_index] = '\0'; // Ensure the buffer is properly terminated
+                
+                // Sanitize the buffer to remove non-ASCII characters that could cause decode errors
+                sanitize_string(msg_buffer);
+                
+                match = process_full_message(msg_buffer);
+            }
+            // Either way, the message boundary clears the overflow state so the
+            // next message starts from a clean buffer.
             msg_index = 0; // Reset the buffer for the next message
-            match = process_full_message(msg_buffer);
+            dropping = false;
             break;
+        } else if (dropping) {
+            // Mid-oversized-message: silently ignore all payload bytes until the
+            // terminating ETX clears `dropping` above.
+            continue;
         } else {
             // Append character if space is available.
             if (msg_index < (MSG_BUFFER_SIZE - 1)) {
                 msg_buffer[msg_index++] = c;
             } else {
-                // Buffer overflow – reset the buffer to prevent corruption.
+                // Buffer overflow – enter drop mode: reset the index and discard
+                // the rest of this (oversized) message until ETX (PRD F2.2).
                 msg_index = 0;
+                dropping = true;
             }
         }
     }

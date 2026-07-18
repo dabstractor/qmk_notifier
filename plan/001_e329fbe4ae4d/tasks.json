@@ -88,7 +88,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Thompson NFA Engine",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Implement the NFA compilation and simulation that replace the former backtracking matcher with guaranteed linear-time O(states × strlen) matching.",
           "tasks": [
             {
@@ -137,14 +137,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "NFA Simulation (nfa_addstate, nfa_match, nfa_has_match)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Implement the linear-time NFA simulation with epsilon-closure, generation-tag deduplication, and the two-list swap algorithm.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Implement nfa_addstate() epsilon-closure with lastlist guard",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S2"
@@ -160,7 +160,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S2",
                   "title": "Implement nfa_match() simulation + nfa_has_match()",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T2.S1"
