@@ -291,3 +291,96 @@ struct State {
  * NOTE: unused until P1.M2.T2.S1 (nfa_addstate) => expect a -Wunused-variable
  * warning here; it self-resolves when that subtask lands. */
 static int nfa_gen = 0;
+
+/* ===== P1.M2.T1.S2: nfa_compile() — Thompson construction =====
+ * Compile a processed-pattern byte string (process_escapes output, P1.M1.T2.S1)
+ * into a State pool via Thompson construction. The caller (nfa_match,
+ * P1.M2.T2.S2) allocates `State pool[NFA_MAX_STATES]` on its stack and passes it
+ * in; we fill it and return the start state.
+ *
+ * WHY A COMPILED NFA (not backtracking): the previous engine backtracked and went
+ * EXPONENTIAL on patterns like a+a+a+...b against a long run of a (PRD §7.8).
+ * Thompson construction compiles once and the later simulator runs in guaranteed
+ * O(states x input_len). Crucially, X+ compiles to exactly TWO states (OP_CHAR +
+ * OP_SPLIT loop-back), so a+a+a+... scales as 2k+1 — never 2^k. See Russ Cox,
+ * "Regular Expression Matching Can Be Simple And Fast",
+ * https://swtch.com/~rsc/regexp/regexp1.html . */
+
+/* ---- compile: processed pattern -> State pool, returns start state ----
+ * Threads `State **tail`: it points at the slot where the NEXT unit's start node
+ * must be written (initially `&start`). Each construct writes *tail = <its start>
+ * then advances tail to its own "dangling exit" slot (out1 for SPLIT, out for
+ * CHAR/ASSERT). At the end we write the OP_MATCH into the final dangling slot. */
+static State *nfa_compile(const char *pat, State *pool, int *nstates_out) {
+    int n = 0;
+    State *start = NULL;
+    State **tail = &start;            /* slot to write the next unit's start into */
+
+    /* Bounds-safe state allocator: return &pool[n] and advance n, but clamp at
+     * NFA_MAX_STATES so a pathological pattern reuses the last slot instead of
+     * overflowing. (2 per byte + MATCH + slack fits any <=128-byte pattern.) */
+    #define NEW() (&pool[n < NFA_MAX_STATES ? n++ : n])   /* allocate one state */
+
+    for (const char *p = pat; *p; p++) {
+        unsigned char b = (unsigned char)*p;
+
+        if (b == 0x2A) {                         /* (a) glob '*' == regex '.*' */
+            /* Thompson construction for .*:  SPLIT -> ANY(loop back) -> exit.
+             * OP_ANY consumes ANY byte incl. '\n'/'\r' (distinct from the dot,
+             * which excludes them). The SPLIT's out1 is the dangled exit. */
+            State *any = NEW(); any->op = OP_ANY;
+            State *sp  = NEW(); sp->op  = OP_SPLIT; sp->out = any; sp->out1 = NULL;
+            any->out = sp;                        /* loop back: ANY -> SPLIT */
+            *tail = sp; tail = &sp->out1;         /* entry = SPLIT; exit via out1 */
+
+        } else if (b == 0x0B || b == 0x0C) {      /* (b) \b / \B : zero-width assert */
+            /* OP_ASSERT consumes no input; the simulator (nfa_addstate, P1.M2.T2.S1)
+             * recurses into `out` only if is_word_boundary(...) matches. arg carries
+             * 0x0B (\b, want boundary) or 0x0C (\B, want non-boundary). */
+            State *a = NEW(); a->op = OP_ASSERT; a->arg = (char)b; a->out = NULL;
+            *tail = a; tail = &a->out;
+
+        } else if (b == 0x0E) {
+            /* (c) standalone quantifier marker — should NOT occur: process_escapes
+             * only emits 0x0E immediately after a consuming element (handled below).
+             * Skip defensively to stay robust if it ever appears alone. */
+            continue;
+
+        } else {                                  /* (d) consuming element X */
+            /* X is any byte that consumes one input char: an escaped literal
+             * (0x01-0x04), a class (0x05-0x0A), the dot (0x0D), a literal '.'
+             * (0x2E) / '+' (0x2B), or any ordinary ASCII byte. Compile to OP_CHAR. */
+            State *c = NEW(); c->op = OP_CHAR; c->arg = (char)b; c->out = NULL;
+
+            if ((unsigned char)p[1] == 0x0E) {    /* X+ : one-or-more, LINEAR (PRD §7.8) */
+                /* Thompson 'plus': after matching one X (c), reach an OP_SPLIT whose
+                 * `out` loops BACK to c (match more) and whose `out1` exits. This is
+                 * exactly 2 states per X+, so a+a+a+... compiles as 2k+1 — the fix
+                 * for the old exponential backtracker. */
+                State *sp = NEW(); sp->op = OP_SPLIT; sp->out = c; sp->out1 = NULL;
+                c->out = sp;                      /* after one X, reach the split */
+                *tail = c; tail = &sp->out1;      /* entry = c; exit via split.out1 */
+                p++;                              /* consume the 0x0E marker */
+            } else {
+                /* Plain single consuming element: entry = c, exit via c->out. */
+                *tail = c; tail = &c->out;
+            }
+        }
+    }
+
+    /* (e) End: append the single accepting state into the final dangling slot. */
+    State *m = NEW(); m->op = OP_MATCH;           /* accepting state */
+    *tail = m;
+
+    /* Zero lastlist on every allocated state. The pool is stack-fresh, but this is
+     * mandatory: nfa_gen starts at 0 and the simulator's FIRST epsilon-closure
+     * (nfa_addstate) guards on lastlist == nfa_gen (== 0); zeroing guarantees no
+     * state is wrongly pre-marked. PRD §7.5: "Zero lastlist on every allocated
+     * state (the pool is fresh each call)." */
+    for (int i = 0; i < n; i++) pool[i].lastlist = 0;
+
+    *nstates_out = n;
+
+    #undef NEW
+    return start;
+}
