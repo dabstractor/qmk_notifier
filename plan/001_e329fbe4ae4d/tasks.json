@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Public Header & Parsing Pipeline",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Establish the public API header and the pattern-processing pipeline (escape processing, anchor detection, public entry point).",
           "tasks": [
             {
@@ -42,7 +42,7 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Processed-Pattern Pipeline (process_escapes, parse_pattern, entry point)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Implement the pattern-processing pipeline: escape/metacharacter processing, anchor detection, the public pattern_match entry point, and cleanup.",
               "subtasks": [
                 {
@@ -67,7 +67,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Implement parse_pattern(), free_parsed_pattern(), pattern_match(), get_escaped_char()",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"
@@ -102,7 +102,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Define State struct, ops enum, sizing constants",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M1.T2.S2"
