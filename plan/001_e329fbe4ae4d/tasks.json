@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Pattern Matching Engine (pattern_match.{c,h})",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Build the Thompson-NFA regex engine and its complete host-side test suite. This is the foundational, independently-testable component. It must compile both as a standalone translation unit (host tests) and when #included by notifier.c (QMK build). All 1826 test assertions must pass.",
       "milestones": [
         {
@@ -182,7 +182,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Character Classification & Anchor Strategy",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Implement the character classification helpers, the single-char predicate, and the anchor-strategy selection logic that ties the NFA to the public API.",
           "tasks": [
             {
@@ -214,14 +214,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Single-Char Predicate & Anchor Strategy",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Implement the single-char predicate (pattern_char_matches) and the matching-strategy selection (match_with_anchors) that dispatches to the NFA based on anchor flags.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Implement pattern_char_matches()",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T1.S1"
@@ -237,7 +237,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T2.S2",
                   "title": "Implement match_with_anchors() + match_string_with_start() + match_reaches_end_with_start()",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T2.S2",
