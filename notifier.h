@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 typedef void (*callback_t)(void);
 typedef struct {
     const char *pattern;
