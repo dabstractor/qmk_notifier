@@ -189,14 +189,14 @@
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Character Classification Helpers",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the static classification functions used by the NFA for \\d, \\w, \\s, and \\b/\\B assertions.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Implement is_digit_char, is_word_char, is_whitespace_char, is_word_boundary",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S2"
@@ -214,7 +214,7 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Single-Char Predicate & Anchor Strategy",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Implement the single-char predicate (pattern_char_matches) and the matching-strategy selection (match_with_anchors) that dispatches to the NFA based on anchor flags.",
               "subtasks": [
                 {
