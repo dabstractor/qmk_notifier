@@ -19,7 +19,7 @@ size_t get_command_map_size(void);
 layer_map_t* get_layer_map(void);
 size_t get_layer_map_size(void);
 
-#define GS_DELIMITER "\x1D"  // ASCII 31 (Unit Separator)
+#define GS_DELIMITER "\x1D"  // ASCII 29 (Group Separator)
 #define ETX_TERMINATOR "\x03"  // ASCII 3 (End of Text)
 #define WINDOW_TITLE(classname, title) classname GS_DELIMITER title
 #define WT(...) WINDOW_TITLE(__VA_ARGS__)

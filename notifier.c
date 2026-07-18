@@ -113,7 +113,7 @@ void disable_command(void) {
     current_command = NULL;
 }
 
-// Helper function to find unit delimiters in a string
+// Helper function to find the group separator (GS, 0x1D) in a string
 const char* find_first_delimiter(const char *str) {
     for (const char *p = str; *p != '\0'; p++) {
         if (*p == GS_DELIMITER[0]) {  // Add any other delimiters here
@@ -151,11 +151,14 @@ bool split_by_delimiter(const char *source, const char *delimiter_pos,
 
 // Generic function for pattern matching with delimiter support
 bool match_pattern(const char *pattern, const char *message, bool case_sensitive) {
-    const char *pattern_delimiter = find_first_delimiter(pattern);
-
+    // NULL guard FIRST (PRD §8.5 step 2) — find_first_delimiter(pattern) below
+    // would dereference a NULL pattern (it loops `for(p=str; *p; p++)`), so this
+    // must precede any use of `pattern`. Fixes BUG-1 (former SIGSEGV on NULL).
     if (message == NULL || pattern == NULL) {
         return false;
     }
+
+    const char *pattern_delimiter = find_first_delimiter(pattern);
 
     if (pattern_delimiter == NULL) {
         // No delimiter in pattern
@@ -244,7 +247,7 @@ bool process_full_message(char *data) {
     signed int found_command_match = -1;
     signed int found_layer_match = -1;
 
-    if (length >= sizeof(received_command)) {
+    if ((size_t)length >= sizeof(received_command)) {
         return false;
     }
 
@@ -263,18 +266,18 @@ bool process_full_message(char *data) {
     size_t lyr_map_size = get_layer_map_size();
 
     // Command map checks
-    for (int i = 0; i < cmd_map_size; i++) {
+    for (size_t i = 0; i < cmd_map_size; i++) {
         if (match_pattern(cmd_map[i].pattern, received_command, cmd_map[i].case_sensitive)) {
-            found_command_match = i;
+            found_command_match = (signed int)i;
             command_found = &cmd_map[i];
             break;
         }
     }
 
     // Layer map checks
-    for (int i = 0; i < lyr_map_size; i++) {
+    for (size_t i = 0; i < lyr_map_size; i++) {
         if (match_pattern(lyr_map[i].pattern, received_command, lyr_map[i].case_sensitive)) {
-            found_layer_match = i;
+            found_layer_match = (signed int)i;
             layer_found = lyr_map[i].layer;
             break;
         }
@@ -294,8 +297,8 @@ bool process_full_message(char *data) {
     }
 
     #ifdef CONSOLE_ENABLE
-    // replace all unit delimeters with |
-    for (int i = 0; i < strlen(received_command); i++) {
+    // replace all group separators (GS) with '|' for console readability
+    for (size_t i = 0; i < strlen(received_command); i++) {
         if (received_command[i] == GS_DELIMITER[0]) {
             received_command[i] = '|';
         }

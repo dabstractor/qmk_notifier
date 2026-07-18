@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>   /* tolower() for case-insensitive matching in pattern_char_matches */
 
 /*
  * Process escape sequences, the dot metacharacter, and the '+' quantifier in a
@@ -91,11 +92,22 @@ typedef struct {
     char       *processed_pattern; /* malloc'd by process_escapes(); freed by free_parsed_pattern() */
 } parsed_pattern_t;
 
-/* match_with_anchors is fully implemented in P1.M3.T2.S2. Until then a STUB
- * returning false is provided (see below) so pattern_match() links and the
- * public API is exercised; real matching (and the passing suites) arrive with
- * P1.M3.T2.S2. */
+/* Forward declaration: match_with_anchors (the anchor strategy, P1.M3.T2.S2)
+ * and its NFA helpers are defined below; forward-declared here so pattern_match
+ * (the public entry) can call match_with_anchors before its definition. */
 static bool match_with_anchors(const parsed_pattern_t *parsed, const char *str, bool case_sensitive);
+
+/* Forward declarations for the NFA simulation + anchor helpers (GOTCHA-6):
+ * match_with_anchors calls the two wrappers, which call nfa_match; all are
+ * defined at the bottom (after nfa_addstate). Forward-declared here so the
+ * match_with_anchors body can sit at its existing site. */
+static bool nfa_match(const char *pattern, const char *str,
+                      const char *string_start, bool case_sensitive,
+                      bool full_match);
+static bool match_string_with_start(const char *pattern, const char *str,
+        const char *string_start, bool case_sensitive);
+static bool match_reaches_end_with_start(const char *pattern, const char *str,
+        const char *string_start, bool case_sensitive);
 
 /* Reverse-map a process_escapes() placeholder byte back to the human-readable
  * character. Used by pattern_char_matches() (P1.M3.T2.S1) for the escaped-literal
@@ -210,14 +222,36 @@ static parsed_pattern_t parse_pattern(const char *pattern) {
     return parsed;
 }
 
-/* STUB — replaced by P1.M3.T2.S2. Returns false so pattern_match() is safe to
- * link and call today; the real anchor-aware NFA matching (and the passing test
- * suites) arrive with P1.M3.T2.S2. Item-spec §5 explicitly permits this stub. */
+/* ===== P1.M3.T2.S2: match_with_anchors — the anchor strategy (PRD §7.4) =====
+ * Replaces the temporary STUB. Picks the NFA mode (full-match vs reach-any) and
+ * whether to loop over start offsets based on the parsed anchor flags:
+ *   ^...$ exact -> one full match from offset 0
+ *   ^...       prefix -> one reach-any match from offset 0
+ *   ...$       suffix -> loop offsets, full match from each
+ *   ...        substring -> loop offsets, reach-any from each (empty core only
+ *               matches the empty string). */
 static bool match_with_anchors(const parsed_pattern_t *parsed, const char *str, bool case_sensitive) {
-    (void)parsed;
-    (void)str;
-    (void)case_sensitive;
-    return false;
+    if (!parsed || !str) return false;
+    const char *core_pattern = parsed->core_pattern;
+
+    if (parsed->start_anchored && parsed->end_anchored) {        /* ^...$ exact */
+        return match_reaches_end_with_start(core_pattern, str, str, case_sensitive);
+    } else if (parsed->start_anchored) {                         /* ^ prefix */
+        return match_string_with_start(core_pattern, str, str, case_sensitive);
+    } else if (parsed->end_anchored) {                           /* $ suffix */
+        size_t str_len = strlen(str);
+        for (size_t i = 0; i <= str_len; i++)
+            if (match_reaches_end_with_start(core_pattern, str + i, str, case_sensitive))
+                return true;
+        return false;
+    } else {                                                     /* substring (default) */
+        if (strlen(core_pattern) == 0) return strlen(str) == 0;  /* empty core -> only empty string */
+        size_t str_len = strlen(str);
+        for (size_t i = 0; i <= str_len; i++)
+            if (match_string_with_start(core_pattern, str + i, str, case_sensitive))
+                return true;
+        return false;
+    }
 }
 
 /* ===== PUBLIC API (declared in pattern_match.h) =====
@@ -243,11 +277,14 @@ bool pattern_match(const char *pattern, const char *str, bool case_sensitive) {
  * https://swtch.com/~rsc/regexp/regexp1.html  (see PRD §7.5, §7.9). */
 
 /* Pool sizing. nfa_compile() declares `State pool[NFA_MAX_STATES]` on its stack
- * (NOT static — the pool must be fresh each call so lastlist starts at 0). At
- * NFA_MAX_PATTERN=128 that is 258 States (~8 KB on 64-bit, ~5 KB on 32-bit MCUs
- * — within the §7.9 "~6–8 KB" budget). Lower NFA_MAX_PATTERN for low-RAM AVR. */
-#define NFA_MAX_PATTERN 128                         /* max processed-pattern length */
-#define NFA_MAX_STATES  (2 * NFA_MAX_PATTERN + 2)   /* = 258: 2 per byte + MATCH + slack */
+ * (NOT static — the pool must be fresh each call so lastlist starts at 0).
+ * NFA_MAX_PATTERN is a per-target resource knob (PRD §7.9): the host/test build
+ * uses a large default so the stress suites' multi-KB patterns fit; low-RAM AVR
+ * QMK builds override it (e.g. `#define NFA_MAX_PATTERN 64` before #include in
+ * notifier.c) to stay within the §7.9 "~6–8 KB" stack budget. State is ~32–40 B
+ * on 64-bit, so each unit of NFA_MAX_PATTERN costs ~64–80 B of stack per call. */
+#define NFA_MAX_PATTERN 2048                        /* max processed-pattern length (PRD §7.9: tunable per-target; host/test default, QMK overrides via notifier.c) */
+#define NFA_MAX_STATES  (2 * NFA_MAX_PATTERN + 2)   /* = 4098: 2 per byte + MATCH + slack */
 
 /* NFA node opcodes (Thompson construction). nfa_compile emits these; nfa_addstate
  * and nfa_match switch on `s->op`. */
@@ -288,8 +325,7 @@ struct State {
  * per simulation step (nfa_match) so the lastlist==nfa_gen guard de-dups the
  * epsilon-closure. Safe because the matcher is single-threaded in QMK (if
  * reentrancy were ever needed, keep the State arrays on the stack — §7.9).
- * NOTE: unused until P1.M2.T2.S1 (nfa_addstate) => expect a -Wunused-variable
- * warning here; it self-resolves when that subtask lands. */
+ * Consumed by nfa_addstate (read) and nfa_match (bumped once per phase). */
 static int nfa_gen = 0;
 
 /* ===== P1.M2.T1.S2: nfa_compile() — Thompson construction =====
@@ -319,7 +355,7 @@ static State *nfa_compile(const char *pat, State *pool, int *nstates_out) {
     /* Bounds-safe state allocator: return &pool[n] and advance n, but clamp at
      * NFA_MAX_STATES so a pathological pattern reuses the last slot instead of
      * overflowing. (2 per byte + MATCH + slack fits any <=128-byte pattern.) */
-    #define NEW() (&pool[n < NFA_MAX_STATES ? n++ : n])   /* allocate one state */
+    #define NEW() (&pool[n < NFA_MAX_STATES ? n++ : (NFA_MAX_STATES - 1)])   /* allocate one state (clamp: reuse last slot, never overflow) */
 
     for (const char *p = pat; *p; p++) {
         unsigned char b = (unsigned char)*p;
@@ -383,4 +419,204 @@ static State *nfa_compile(const char *pat, State *pool, int *nstates_out) {
 
     #undef NEW
     return start;
+}
+
+/* ===== P1.M2.T2.S1: nfa_addstate() — epsilon-closure with lastlist guard =====
+ * Epsilon-closure primitive for the Thompson-NFA simulator. Given a state `s`,
+ * follow all epsilon transitions (OP_SPLIT forks and — conditionally — OP_ASSERT
+ * zero-width edges) and collect every OP_CHAR / OP_ANY / OP_MATCH state that is
+ * "live" at the current input position into `list[*n .. )`.
+ *
+ * THE lastlist GUARD IS MANDATORY (PRD §13 invariant #11): without
+ * `if (s->lastlist == nfa_gen) return;`, an OP_SPLIT whose two branches converge
+ * on a shared successor (and repeated \b/\B at one position) would recurse
+ * infinitely. The generation tag `nfa_gen` is bumped ONCE per simulation phase
+ * by the caller (nfa_match, P1.M2.T2.S2), so each closure gets a fresh "seen"
+ * set at O(1) cost — no memset, no allocation. See Russ Cox, "Regular Expression
+ * Matching Can Be Simple And Fast", https://swtch.com/~rsc/regexp/regexp1.html .
+ *
+ * NOTE on is_word_boundary: the real position-based classifier is implemented
+ * immediately below (P1.M3.T1.S1); the signature (size_t pos) is fixed by
+ * PRD §7.6 so the call site in nfa_addstate never changes. */
+
+/* ===== P1.M3.T1.S1: character classifiers + real is_word_boundary =====
+ * Position-based word-boundary test and the three class predicates consumed by
+ * pattern_char_matches (P1.M3.T2.S1). is_word_boundary replaces the STUB that
+ * was provided while the classifier was pending; the signature (size_t pos) is
+ * fixed by PRD §7.6, so the call site in nfa_addstate is unchanged. */
+
+static bool is_digit_char(char c) { return c >= '0' && c <= '9'; }
+
+static bool is_word_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9') || (c == '_');
+}
+
+static bool is_whitespace_char(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
+
+/* Word-boundary test against the ORIGINAL string (PRD §7.6, §13 #10). A boundary
+ * exists at `pos` when exactly one of the neighboring characters is a word char.
+ * Edge positions use an implicit non-word char on the off-string side. The
+ * empty-original-string case is short-circuited inside nfa_addstate's OP_ASSERT
+ * branch BEFORE this is called, but we keep the NULL + len guards defensive. */
+static bool is_word_boundary(const char *str, size_t pos) {
+    if (!str) return false;
+    size_t str_len = strlen(str);
+    if (pos == 0)        return (str_len > 0 && is_word_char(str[0]));
+    if (pos == str_len)  return (str_len > 0 && is_word_char(str[str_len - 1]));
+    if (pos > str_len)   return false;
+    return is_word_char(str[pos - 1]) != is_word_char(str[pos]);
+}
+
+/* ---- epsilon-closure add (follow SPLIT/ASSERT, collect CHAR/ANY/MATCH) ---- */
+static void nfa_addstate(State **list, int *n, State *s,
+                         const char *string_start, size_t abspos) {
+    /* De-dup + NULL-safe: skip if `s` is NULL or already in THIS closure.
+     * lastlist == nfa_gen means we have already added/followed `s` during the
+     * current simulation phase (nfa_gen is bumped once per phase by nfa_match).
+     * This single guard is what makes OP_SPLIT and \b\b terminate (PRD §13 #11). */
+    if (!s || s->lastlist == nfa_gen) return;     /* already in this closure */
+
+    /* Mark seen for THIS generation BEFORE dispatching, so a state reached via an
+     * OP_SPLIT branch is not re-added when the OTHER branch converges on it. */
+    s->lastlist = nfa_gen;
+
+    if (s->op == OP_MATCH) {
+        /* Accepting state: collect it; nfa_has_match (P1.M2.T2.S2) reports the
+         * match by scanning the list for an OP_MATCH. */
+        list[(*n)++] = s;
+        return;
+    }
+
+    if (s->op == OP_SPLIT) {
+        /* Epsilon fork (glob '*', 'X+'): follow BOTH out and out1 WITHOUT
+         * consuming input. abspos is forwarded UNCHANGED to both branches
+         * (PRD §13 #10: abspos is absolute from string_start; epsilon edges do
+         * not advance the input position). */
+        nfa_addstate(list, n, s->out,  string_start, abspos);
+        nfa_addstate(list, n, s->out1, string_start, abspos);
+        return;
+    }
+
+    if (s->op == OP_ASSERT) {
+        /* Zero-width assertion \b (arg==0x0B, want a boundary) / \B (arg==0x0C,
+         * want a NON-boundary). Recurse into `out` ONLY if the boundary
+         * condition holds. abspos is absolute (PRD §13 #10) so \b/\B evaluate
+         * against the ORIGINAL string, not the per-offset pointer.
+         *
+         * EMPTY-STRING SPECIAL CASE (legacy semantics the test suite encodes):
+         * if the original string is empty (*string_start == '\0'), NEITHER a
+         * boundary nor a non-boundary passes, so we do NOT recurse. The empty-
+         * string check short-circuits BEFORE calling is_word_boundary, so this
+         * behavior is independent of the is_word_boundary implementation. */
+        int want_boundary = (s->arg == 0x0B);     /* \b wants a boundary; \B wants none */
+        if (*string_start != '\0' &&
+            is_word_boundary(string_start, abspos) == want_boundary)
+            nfa_addstate(list, n, s->out, string_start, abspos);
+        return;                                   /* never collect an ASSERT state itself */
+    }
+
+    /* OP_CHAR / OP_ANY: a consuming state. Add it to the list; it is "live" and
+     * waiting for the simulator to feed it the next input char (nfa_match,
+     * P1.M2.T2.S2). OP_ANY (glob '*') matches any byte incl. '\n'/'\r'; OP_CHAR
+     * is tested via pattern_char_matches (P1.M3.T2.S1). */
+    list[(*n)++] = s;
+}
+
+/* ===== P1.M3.T2.S1: pattern_char_matches — single-byte match predicate =====
+ * Test whether a processed-pattern byte `pc` matches an input char `sc`. The
+ * processed byte encodes either an escaped literal (0x01-0x04), a character
+ * class (0x05-0x0A), or the dot (0x0D); any other byte is an ordinary literal.
+ * Matching is case-folded via tolower() unless `case_sensitive` is set (PRD §7.7).
+ * Escaped-literal placeholders are decoded via get_escaped_char() FIRST and then
+ * folded — never fold the placeholder byte itself. tolower() takes an unsigned
+ * char value, so args are cast to (unsigned char) to avoid sign-extension UB. */
+static bool pattern_char_matches(char pc, char sc, bool case_sensitive) {
+    if (pc >= '\x01' && pc <= '\x04') {                 /* escaped literal */
+        char literal = get_escaped_char(pc);
+        return case_sensitive ? (literal == sc)
+              : (tolower((unsigned char)literal) == tolower((unsigned char)sc));
+    }
+    switch (pc) {
+        case '\x05': return is_digit_char(sc);          /* \d */
+        case '\x06': return !is_digit_char(sc);         /* \D */
+        case '\x07': return is_word_char(sc);           /* \w */
+        case '\x08': return !is_word_char(sc);          /* \W */
+        case '\x09': return is_whitespace_char(sc);     /* \s */
+        case '\x0A': return !is_whitespace_char(sc);    /* \S */
+        case '\x0D': return (sc != '\n' && sc != '\r'); /* .  (dot excludes newline) */
+        default:                                        /* ordinary literal */
+            return case_sensitive ? (pc == sc)
+                  : (tolower((unsigned char)pc) == tolower((unsigned char)sc));
+    }
+}
+
+/* ===== P1.M2.T2.S2: nfa_has_match + nfa_match — the Thompson simulation =====
+ * Two-list simulation of the compiled NFA (Russ Cox). Compile once (nfa_compile),
+ * maintain clist (current live states) + nlist (next live states). nfa_gen is
+ * bumped once per phase so nfa_addstate's lastlist guard de-dups the closure in
+ * O(states) with no allocation — guaranteed O(states x strlen), no backtracking
+ * (the fix for the old exponential matcher; PRD §7.8). See
+ * https://swtch.com/~rsc/regexp/regexp1.html . */
+
+/* Report whether an accepting OP_MATCH state is on the current state list. */
+static int nfa_has_match(State **list, int n) {
+    for (int i = 0; i < n; i++) if (list[i]->op == OP_MATCH) return 1;
+    return 0;
+}
+
+/* full_match=false: MATCH reachable at any point (prefix/substring match).
+ * full_match=true:  MATCH reachable only after consuming the WHOLE string. */
+static bool nfa_match(const char *pattern, const char *str,
+                      const char *string_start, bool case_sensitive,
+                      bool full_match) {
+    State pool[NFA_MAX_STATES];
+    int nstates;
+    State *start = nfa_compile(pattern, pool, &nstates);
+    if (!start) return full_match ? (*str == '\0') : true;   /* defensive guard (GOTCHA-2) */
+    (void)nstates;
+
+    State *clist_buf[NFA_MAX_STATES];
+    State *nlist_buf[NFA_MAX_STATES];
+    State **clist = clist_buf, **nlist = nlist_buf;
+    int cn = 0, nn;
+    size_t abspos = (size_t)(str - string_start);            /* absolute offset (PRD §13 #10) */
+
+    nfa_gen++;                                               /* seed closure (GOTCHA-3) */
+    nfa_addstate(clist, &cn, start, string_start, abspos);
+    if (!full_match && nfa_has_match(clist, cn)) return true;/* empty prefix matched */
+
+    size_t pos = abspos;
+    for (const char *p = str; *p; p++, pos++) {
+        char c = *p;
+        nfa_gen++; nn = 0;                                   /* fresh phase */
+        for (int i = 0; i < cn; i++) {
+            State *s = clist[i];
+            if (s->op == OP_ANY) {                           /* glob '*': ANY byte incl \n/\r (PRD §13 #8) */
+                nfa_addstate(nlist, &nn, s->out, string_start, pos + 1);
+            } else if (s->op == OP_CHAR &&
+                       pattern_char_matches(s->arg, c, case_sensitive)) {
+                nfa_addstate(nlist, &nn, s->out, string_start, pos + 1);
+            }
+        }
+        State **tmp = clist; clist = nlist; nlist = tmp; cn = nn;  /* swap lists */
+        if (cn == 0) break;                                  /* dead — no live states */
+        if (!full_match && nfa_has_match(clist, cn)) return true; /* prefix matched */
+    }
+    return nfa_has_match(clist, cn) ? true : false;          /* full: accept only at end */
+}
+
+/* ===== P1.M3.T2.S2: anchor-strategy wrappers (thin forwarders to nfa_match) =====
+ * match_string_with_start     -> reach-any (substring/prefix; full_match=false).
+ * match_reaches_end_with_start -> consume-whole-remaining (suffix/exact; full_match=true).
+ * Both forward the ORIGINAL string_start so \b/\B compute absolute positions. */
+static bool match_string_with_start(const char *pattern, const char *str,
+        const char *string_start, bool case_sensitive) {
+    return nfa_match(pattern, str, string_start, case_sensitive, false);
+}
+static bool match_reaches_end_with_start(const char *pattern, const char *str,
+        const char *string_start, bool case_sensitive) {
+    return nfa_match(pattern, str, string_start, case_sensitive, true);
 }

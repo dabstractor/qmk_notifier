@@ -88,7 +88,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Thompson NFA Engine",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Implement the NFA compilation and simulation that replace the former backtracking matcher with guaranteed linear-time O(states × strlen) matching.",
           "tasks": [
             {
@@ -137,7 +137,7 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "NFA Simulation (nfa_addstate, nfa_match, nfa_has_match)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Implement the linear-time NFA simulation with epsilon-closure, generation-tag deduplication, and the two-list swap algorithm.",
               "subtasks": [
                 {
@@ -160,7 +160,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S2",
                   "title": "Implement nfa_match() simulation + nfa_has_match()",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T2.S1"
@@ -427,28 +427,28 @@
       "type": "Phase",
       "id": "P2",
       "title": "QMK Firmware Module (notifier.{c,h}, rules.mk)",
-      "status": "Planned",
+      "status": "Complete",
       "description": "Build the on-keyboard receiver, reassembler, delimiter-aware matcher, and rule dispatcher. notifier.c #includes pattern_match.c directly (same translation unit). This phase depends on Phase 1 being complete. notifier.c cannot be compiled standalone (depends on QMK symbols) — it is only validated on-device or via stub-compile.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P2.M1",
           "title": "Public API & Build Integration",
-          "status": "Planned",
+          "status": "Complete",
           "description": "Write the public header consumed by user keymaps and the 2-line rules.mk that integrates with QMK.",
           "tasks": [
             {
               "type": "Task",
               "id": "P2.M1.T1",
               "title": "notifier.h — Public API Header",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Write the public header with structs, macros, constants, accessor declarations, and entry-point declarations.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T1.S1",
                   "title": "Write notifier.h with structs, macros, constants, accessors, entry points",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/notifier_architecture.md §Public API. CRITICAL: The GS_DELIMITER comment must say 'Group Separator' (0x1D = decimal 29), NOT 'Unit Separator' (which is 0x1F = decimal 31). This is a known bug in the current codebase (notifier.h:22) — see plan/001_e329fbe4ae4d/architecture/findings_and_risks.md DRIFT-1. The byte value 0x1D is correct; only the comment was wrong.\n2. INPUT: None — this is a standalone header.\n3. LOGIC: Create notifier.h with: (a) #pragma once, #include <stdbool.h>. (b) typedef void (*callback_t)(void). (c) command_map_t { const char *pattern; callback_t on_enable; callback_t on_disable; const bool case_sensitive; }. (d) layer_map_t { const char *pattern; const int layer; const bool case_sensitive; }. (e) Four accessor declarations: get_command_map, get_command_map_size, get_layer_map, get_layer_map_size. (f) Constants: GS_DELIMITER=\"\\x1D\" with comment 'ASCII 29 (Group Separator)'; ETX_TERMINATOR=\"\\x03\" with comment 'ASCII 3 (End of Text)'. (g) WINDOW_TITLE(classname, title) macro = classname GS_DELIMITER title. WT(...) = WINDOW_TITLE(__VA_ARGS__). (h) DEFINE_SERIAL_COMMANDS(...) and DEFINE_SERIAL_LAYERS(...) macros from PRD §5.4. (i) Entry point declarations: raw_hid_receive, hid_notify. ~42 lines.\n4. OUTPUT: notifier.h — the public API consumed by user keymaps via #include \"./qmk-notifier/notifier.h\".\n5. DOCS: [Mode A] The GS_DELIMITER comment must correctly say 'Group Separator' (fixing the known DRIFT-1 bug). The DEFINE_SERIAL_* macro doc comments should note that omitted trailing struct fields are zero-filled.",
@@ -468,14 +468,14 @@
               "type": "Task",
               "id": "P2.M1.T2",
               "title": "rules.mk — QMK Build Integration",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Write the 2-line rules.mk that enables Raw HID and adds the notifier source.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T2.S1",
                   "title": "Write rules.mk",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_e329fbe4ae4d/architecture/external_deps.md §SRC += in rules.mk. Verified: RAW_ENABLE gates Raw HID code via #ifdef; SRC += accumulates into the global SRC variable. The SRC path 'qmk-notifier/notifier.c' is relative to the keyboard directory where the submodule is placed.\n2. INPUT: None.\n3. LOGIC: Create rules.mk with exactly two lines: 'RAW_ENABLE = yes' and 'SRC += qmk-notifier/notifier.c'. The first enables QMK's Raw HID feature (usage page 0xFF60 / usage 0x61, 32-byte reports). The second compiles notifier.c (which itself #includes pattern_match.c). Do NOT hand-write 'SRC += lib/...' or point at 'qmk_notifier.c' (underscore) — that fails to link.\n4. OUTPUT: A 2-line Makefile fragment included by the user's keymap rules.mk via 'include keyboards/.../qmk-notifier/rules.mk'.\n5. DOCS: none — 2-line file, self-explanatory.",
@@ -493,21 +493,21 @@
           "type": "Milestone",
           "id": "P2.M2",
           "title": "Receiver, Reassembler & Dispatcher",
-          "status": "Planned",
+          "status": "Complete",
           "description": "Implement the complete notifier.c: constants, globals, sanitization, weak defaults, layer/command state machines, delimiter-aware matching, dispatcher, and entry point.",
           "tasks": [
             {
               "type": "Task",
               "id": "P2.M2.T1",
               "title": "Constants, Globals, Weak Defaults & Sanitization",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the foundational constants, static globals, weak default map accessors, and the sanitize_string function.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M2.T1.S1",
                   "title": "Implement constants, globals, weak default maps, sanitize_string()",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T1.S1",
@@ -529,14 +529,14 @@
               "type": "Task",
               "id": "P2.M2.T2",
               "title": "Layer & Command State Machines",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement activate_layer, deactivate_layer, enable_command, disable_command — the state machine wrappers around QMK's layer_on/off and user callbacks.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M2.T2.S1",
                   "title": "Implement activate_layer(), deactivate_layer(), enable_command(), disable_command()",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M2.T1.S1"
@@ -554,14 +554,14 @@
               "type": "Task",
               "id": "P2.M2.T3",
               "title": "Delimiter-Aware Matching (match_pattern + helpers)",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the internal match_pattern function and its delimiter helpers. This applies the firmware's two-part (class|title) matching semantics on top of the public pattern_match.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M2.T3.S1",
                   "title": "Implement find_first_delimiter(), split_by_delimiter(), match_pattern()",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M2.T1.S1",
@@ -581,14 +581,14 @@
               "type": "Task",
               "id": "P2.M2.T4",
               "title": "Dispatcher & Entry Point (process_full_message, hid_notify)",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the message dispatcher with its ordering invariants and the Raw HID entry point with coexistence guard, reassembly, and acknowledgement.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M2.T4.S1",
                   "title": "Implement process_full_message() — the dispatcher",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M2.T2.S1",
@@ -606,7 +606,7 @@
                   "type": "Subtask",
                   "id": "P2.M2.T4.S2",
                   "title": "Implement hid_notify() — the Raw HID entry point",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M2.T4.S1"
@@ -632,7 +632,7 @@
       "type": "Phase",
       "id": "P3",
       "title": "Acceptance Gate & Documentation Sync",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Run the full acceptance gate (all 9 suites, performance verification, pathological NFA stress) and sync changeset-level documentation (README.md).",
       "milestones": [
         {
