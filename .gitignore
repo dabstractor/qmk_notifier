@@ -20,4 +20,5 @@ venv/
 Thumbs.db
 
 # Local agent harness state
+.pi/
 .pi-subagents/
