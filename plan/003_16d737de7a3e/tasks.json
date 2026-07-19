@@ -101,7 +101,7 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "hid_notify typed routing + multi-report framing + host state machines",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add the typed_mode flag and discriminator check to hid_notify for routing typed commands vs legacy strings, plus the set_host_layer and apply_host_callbacks host state machines.",
               "subtasks": [
                 {
@@ -141,7 +141,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S3",
                   "title": "Implement apply_host_callbacks (disable-before-enable diff against host_cb_enabled[])",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T2.S1"
@@ -165,7 +165,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Implement typed response builder + handle_typed_command dispatch + QUERY_INFO + QUERY_CALLBACK handlers",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S1",

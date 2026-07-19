@@ -264,6 +264,58 @@ static void set_host_layer(uint8_t layer) {
     }
 }
 
+/* apply_host_callbacks (§14) — Host callback diff against host_cb_enabled[].
+ * Given the host's FULL desired enabled id set (ids[0..count)), this mirrors the
+ * board disable-before-enable ordering (§13 invariant 4): Phase 1 disables newly-
+ * out-of-set ids (fires on_disable), THEN Phase 2 enables newly-in-set ids (fires
+ * on_enable). Doing disables first prevents a callback being briefly in both
+ * states during a transition (an id moving out of set A and into set B fires its
+ * on_disable before any on_enable). Unchanged ids fire neither callback.
+ *
+ * Defensive id range check (RISK-3, findings_and_risks.md): malformed host data
+ * must not crash the firmware, so both phases range-check ids against
+ * get_host_callbacks_size() before dereferencing the registry, and Phase 2 also
+ * checks id < HOST_CALLBACK_MAX (bounds for host_cb_enabled[]). Phase 1 still
+ * clears host_cb_enabled[id] for an out-of-set id even if it is >= the registry
+ * size (the array, not the dereference, is what we clear). NULL on_enable/
+ * on_disable are guarded (same pattern as enable_command/disable_command). The
+ * sole caller is the APPLY_HOST_CONTEXT handler (P1.M2.T2.S3). */
+static void apply_host_callbacks(const uint8_t *ids, uint8_t count) {
+    host_callback_t *cbs     = get_host_callbacks();     /* NULL when no DEFINE_HOST_CALLBACKS (weak default) */
+    size_t           cb_size = get_host_callbacks_size(); /* 0 when no registry -> no derefs below (RISK-3) */
+
+    /* PHASE 1 — DISABLE (newly-out-of-set): for each currently-enabled id NOT in
+     * the desired set, fire on_disable then clear. Done BEFORE enables so a
+     * callback is never briefly in both states (board disable-before-enable,
+     * §13 invariant 4). */
+    for (uint8_t id = 0; id < HOST_CALLBACK_MAX; id++) {
+        if (!host_cb_enabled[id]) continue;
+        bool still_desired = false;
+        for (uint8_t i = 0; i < count; i++) {
+            if (ids[i] == id) { still_desired = true; break; }
+        }
+        if (still_desired) continue;
+        if (id < cb_size && cbs[id].on_disable != NULL) {   /* RISK-3 guard before deref */
+            cbs[id].on_disable();
+        }
+        host_cb_enabled[id] = false;
+    }
+
+    /* PHASE 2 — ENABLE (newly-in-set): for each desired id not already enabled,
+     * fire on_enable then set. Skips out-of-range ids (RISK-3) and ids already
+     * enabled (the diff fires on_enable only for newly-in-set ids). */
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t id = ids[i];
+        if (id >= HOST_CALLBACK_MAX) continue;             /* RISK-3: host_cb_enabled[] bounds */
+        if (id >= cb_size) continue;                       /* RISK-3: registry bounds */
+        if (host_cb_enabled[id]) continue;                 /* already enabled (diff) */
+        if (cbs[id].on_enable != NULL) {                   /* NULL guard (enable_command pattern) */
+            cbs[id].on_enable();
+        }
+        host_cb_enabled[id] = true;
+    }
+}
+
 void enable_command(command_map_t *command) {
     current_command = command;
     // Guard against a NULL on_enable callback, mirroring the symmetric guard on
