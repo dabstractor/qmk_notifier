@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Public API Surface + State Scaffolding",
-          "status": "Researching",
+          "status": "Complete",
           "description": "The header additions (host_callback_t, DEFINE_HOST_CALLBACKS, typed-command constants) and the notifier.c globals, weak accessors, board_rules_present helper, and the apply_os_change seam refactor. After this milestone the module compiles with the new surface but typed commands are not yet dispatched.",
           "tasks": [
             {
@@ -46,7 +46,7 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "notifier.c state scaffolding + weak accessors + apply_os_change seam",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add host_layer/host_cb_enabled[]/has_been_queried globals, weak host-callback accessors, board_rules_present helper, and refactor notifier_set_os into apply_os_change shared seam.",
               "subtasks": [
                 {
@@ -72,7 +72,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Refactor notifier_set_os into shared apply_os_change seam for SET_OS reuse",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"
@@ -108,7 +108,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Add typed_mode flag + 0xF0 discriminator routing fork in hid_notify",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T2.S1"

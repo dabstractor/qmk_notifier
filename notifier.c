@@ -490,10 +490,10 @@ bool process_full_message(char *data) {
     return command_found != NULL || layer_found != LAYER_UNSET;
 }
 
-/* notifier_set_os — the OS selector (§8.7). Sole mutation point for current_os
- * (invariant 17 / §2 F8.2): the module never calls detected_host_os(), so there
- * is no link dependency on the OS-detection subsystem — the OS is PUSHED in by
- * the keymap (conventionally from process_detected_host_os_kb, §10.1 step 3).
+/* apply_os_change — shared seam for OS changes from both the keymap
+ * (notifier_set_os) and the host (SET_OS typed cmd). Sole mutation point for
+ * current_os (invariant 17). Idempotent on an unchanged value (F9.3); clears
+ * state on change (F9.1). Does NOT re-dispatch the last message (F9.2).
  *
  * Contract (§2 F9):
  *   - IDEMPOTENT on an unchanged value (no-op; F9.3): repeated stable-detection
@@ -503,14 +503,8 @@ bool process_full_message(char *data) {
  *     deactivate_layer() turns off the active notifier layer if any (F9.1). This
  *     guarantees no layer/command chosen under the previous OS's maps survives.
  *   - It does NOT re-dispatch the last message (F9.2): the next focus-change
- *     message from the host re-establishes state under the new maps.
- *
- * Symbol-name parity: the keymap's DEFINE_SERIAL_COMMANDS_OS(OS_MACOS,…) /
- * DEFINE_SERIAL_LAYERS_OS(OS_MACOS,…) macros (##os token-paste in notifier.h)
- * generate the strong _notifier_get_*_map_OS_MACOS[_size] symbols that override
- * the weak defaults; this function only flips current_os so the next dispatch's
- * select_*_map_os() resolves the override. */
-void notifier_set_os(os_variant_t os) {
+ *     message from the host re-establishes state under the new maps. */
+static void apply_os_change(os_variant_t os) {
     if (os == current_os) return;                 /* idempotent: no flap on repeat (F9.3) */
     #ifdef CONSOLE_ENABLE
     uprintf("notifier: OS %u -> %u; clearing state\n", (unsigned)current_os, (unsigned)os);
@@ -520,6 +514,21 @@ void notifier_set_os(os_variant_t os) {
     deactivate_layer();     /* turns off the active notifier layer if any (F9.1)    */
     /* Intentionally do NOT re-dispatch the last message. The next focus-change
      * message from the host re-establishes state under the new maps (F9.2). */
+}
+
+/* notifier_set_os — keymap entry point for the OS selector (§8.7). Delegates to
+ * apply_os_change(), the sole mutation point for current_os (invariant 17): the
+ * module never calls detected_host_os(), so there is no link dependency on the
+ * OS-detection subsystem — the OS is PUSHED in by the keymap (conventionally
+ * from process_detected_host_os_kb, §10.1 step 3).
+ *
+ * Symbol-name parity: the keymap's DEFINE_SERIAL_COMMANDS_OS(OS_MACOS,…) /
+ * DEFINE_SERIAL_LAYERS_OS(OS_MACOS,…) macros (##os token-paste in notifier.h)
+ * generate the strong _notifier_get_*_map_OS_MACOS[_size] symbols that override
+ * the weak defaults; this function only flips current_os (via apply_os_change)
+ * so the next dispatch's select_*_map_os() resolves the override. */
+void notifier_set_os(os_variant_t os) {
+    apply_os_change(os);
 }
 
 void hid_notify(uint8_t *data, uint8_t length) {
