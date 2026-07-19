@@ -178,13 +178,23 @@ int main(void) {
     /* ================================================================ */
     /* ===== P1.M3.T1.S3 — SET_OS (0x03) contract blocks (i-iv) ======== */
     /* ================================================================ */
-    /* 🚨 VERIFIED BLOCKER (research/findings.md): SET_OS cmd_id 0x03 == ETX 0x03.
-     * hid_notify's byte loop dispatches on the cmd_id byte, so handle_typed_command
-     * sees cmd_id=0 (default case) and the SET_OS handler NEVER runs. OS_MACOS==3
-     * makes the os_byte ALSO collide. These four blocks are written CORRECTLY per
-     * the §4.6/§4.7 contract; they FAIL against the current notifier.c with the
-     * documented signatures, surfacing the upstream framing flaw (owned by P1.M2).
-     * Do NOT weaken the assertions to mask it. */
+    /* RESOLVED (was BUG-1): SET_OS cmd_id 0x03 == ETX 0x03 and OS_MACOS==3 make the
+     * os_byte ALSO collide. notifier.c now does length-aware typed reassembly
+     * (typed_literal_remaining) so binary payload bytes equal to 0x03 are consumed
+     * literally instead of terminating reassembly. SET_OS dispatches and changes
+     * current_os; these four blocks now PASS per the §4.6/§4.7 contract. */
+
+    /* ===== (ii-pre) OS_UNSURE baseline — run BEFORE any SET_OS — §4.7 / F8.6 =====
+     * Now that the BUG-1 framing flaw is fixed, (i)'s SET_OS(OS_MACOS) legitimately
+     * changes current_os. test_notifier_os.c establishes the pattern ("do the
+     * OS_UNSURE cases FIRST, before any notifier_set_os call"), so the pre-SET_OS
+     * baseline is checked here, before (i), to match its documented intent
+     * ("Before SET_OS, current_os==OS_UNSURE"). The assertion text is unchanged. */
+    {
+        mac_cmd_en = mac_cmd_dis = 0;
+        { char m[] = "iTerm"; process_full_message(m); }
+        CK(mac_cmd_en == 0,                               "(ii) pre-SET_OS: OS_MACOS-only pattern does not match at OS_UNSURE [§4.7]");
+    }
 
     /* ===== (i) SET_OS response layout — §4.6 ===== */
     {
@@ -196,15 +206,10 @@ int main(void) {
     }
 
     /* ===== (ii) SET_OS changes current_os (OS_MACOS map now selected) — §4.7 =====
-     * "iTerm" matches ONLY the OS_MACOS map. Before SET_OS (current_os==OS_UNSURE)
-     * it must NOT fire; after SET_OS(OS_MACOS) it must fire mac_cmd and select
-     * OS_MACOS layer 44 — proving current_os changed and the OS map is selected. */
+     * "iTerm" matches ONLY the OS_MACOS map. After SET_OS(OS_MACOS) it fires
+     * mac_cmd and selects OS_MACOS layer 44 — proving current_os changed and the
+     * OS map is selected. (The OS_UNSURE baseline is checked in (ii-pre) above.) */
     {
-        /* before SET_OS: OS_MACOS-only pattern does not match at OS_UNSURE */
-        mac_cmd_en = mac_cmd_dis = 0;
-        { char m[] = "iTerm"; process_full_message(m); }
-        CK(mac_cmd_en == 0,                                 "(ii) pre-SET_OS: OS_MACOS-only pattern does not match at OS_UNSURE [§4.7]");
-
         /* SET_OS(OS_MACOS) -> current_os=OS_MACOS */
         uint8_t os = OS_MACOS; (void)send_typed(NOTIFY_CMD_SET_OS, &os, 1);
 
@@ -216,10 +221,9 @@ int main(void) {
 
     /* ===== (iii) SET_OS change fires F9 clear — §4.7 / F9 =====
      * Mirror test_notifier_os.c (v): establish board state, SET_OS to a DIFFERENT
-     * OS => prev command on_disable + layer deactivated + no re-dispatch. Note
-     * current_os may be OS_UNSURE here if (ii) was blocked; SET_OS(OS_LINUX) is a
-     * CHANGED os from OS_UNSURE regardless, so the F9 clear still applies IF the
-     * handler runs (it won't, under the blocker). */
+     * OS => prev command on_disable + layer deactivated + no re-dispatch. After
+     * (ii) current_os==OS_MACOS; SET_OS(OS_LINUX) is a CHANGED os so the F9 clear
+     * fires (disable_command + deactivate_layer) with no re-dispatch. */
     {
         board_cmd_en = board_cmd_dis = 0;
         { char m[] = "neovide"; process_full_message(m); }  /* board layer 5 + board cmd */
@@ -246,10 +250,10 @@ int main(void) {
     /* ================================================================ */
     /* ===== P1.M3.T1.S3 — APPLY_HOST_CONTEXT (0x05) blocks (v-viii) === */
     /* ================================================================ */
-    /* cmd 0x05 != ETX, and none of these args (224/0/1/0xFF, ids 0/1) equal 0x03,
-     * so all four blocks PASS against the current notifier.c. Gotcha: the stub
-     * models layers as a SINGLE g_active_layer, so stub_get_active_layer()==224
-     * in BOTH stack and replace — the DISTINGUISHER is board_cmd_dis (0 vs 1). */
+    /* The length-aware typed reassembly consumes AHC args (224/0/1/0xFF, ids 0/1)
+     * literally, so all four blocks PASS. Gotcha: the stub models layers as a
+     * SINGLE g_active_layer, so stub_get_active_layer()==224 in BOTH stack and
+     * replace — the DISTINGUISHER is board_cmd_dis (0 vs 1). */
 
     /* ===== (v) STACK (clear_board=0): board preserved + host layer active — §14 ===== */
     {
@@ -366,10 +370,10 @@ int main(void) {
     /* ================================================================ */
     /* §4.6: "Typed commands are ETX-framed and may span multiple 32-byte
      * reports." A typed APPLY_HOST_CONTEXT (0x05) split across two reports
-     * reassembles + dispatches. WHY AHC not SET_OS: the reassembly byte loop
-     * treats ANY 0x03 byte as ETX; SET_OS's cmd_id 0x03 == ETX (S3's blocker).
-     * AHC's cmd_id 0x05 != ETX, and args layer=224, flags=0, count=28, ids=0
-     * contain NO 0x03 byte, so the message spans reports and reassembles. */
+     * reassembles + dispatches. The length-aware typed reassembly state
+     * (typed_literal_remaining) is `static`, so it survives across hid_notify
+     * calls exactly like msg_index — proving multi-report typed framing works
+     * for the variable-length ids tail (count=28 spans two reports). */
 
     /* ===== (multi-rep) Two-report APPLY_HOST_CONTEXT reassembly — §4.6 =====
      * count=28 ids spans two reports (report1 holds 25 ids, report2 holds 3).

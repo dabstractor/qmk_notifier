@@ -95,6 +95,47 @@ static bool dropping = false;
  * Persists across hid_notify calls for multi-report messages. */
 static bool typed_mode = false;
 
+/* --- Typed-path length-aware reassembly (fixes BUG-1/BUG-2/BUG-3) -------------
+ * PROBLEM: §4.6 typed commands are binary (cmd_id, os_byte, layer, flags,
+ * count, ids) but are framed with the legacy ETX (0x03) terminator. Several
+ * legitimate payload bytes equal 0x03 — notably cmd_id 0x03 (SET_OS) and
+ * os_byte 0x03 (OS_MACOS) — so a naive byte loop that treats every 0x03 as
+ * ETX terminates reassembly mid-payload: SET_OS never dispatches (BUG-1) and
+ * APPLY_HOST_CONTEXT silently applies a leftover layer/cmd (BUG-2/BUG-3).
+ *
+ * FIX: once typed_mode is set and cmd_id is known, the byte loop consumes the
+ * command's argument bytes LITERALLY (0x03 included) and only honors 0x03 as
+ * the terminator AFTER the full argument set is accumulated. The count of
+ * literal bytes still expected is `typed_literal_remaining`; it is set when
+ * cmd_id becomes known and, for the variable-length APPLY_HOST_CONTEXT,
+ * extended by `count` once the fixed header (layer/flags/count) is consumed.
+ * Like typed_mode/msg_index it is `static` so multi-report typed messages
+ * reassemble correctly (the byte count survives across hid_notify calls) and
+ * is reset at every ETX/overflow boundary. */
+static uint16_t typed_literal_remaining = 0;
+
+/* typed_fixed_arg_bytes(cmd_id) — the FIXED argument length for a typed command
+ * id, EXCLUDING the discriminator and cmd_id bytes and EXCLUDING the variable
+ * tail. Used to seed typed_literal_remaining once cmd_id is accumulated.
+ *   QUERY_INFO (0x01): 0 fixed args
+ *   QUERY_CALLBACK (0x02): 1 fixed arg (index)
+ *   SET_OS (0x03): 1 fixed arg (os_byte)
+ *   APPLY_HOST_CONTEXT (0x05): 3 fixed args (layer, flags, count) — the variable
+ *     ids tail is appended after `count` is read from the buffer.
+ *   unknown / 0x04 (reserved VIA-coexist): 0 — dispatch at the next ETX.
+ * Returns 0xFFFF for an unrecognized id so the caller can detect it; the byte
+ * loop treats that as "consume nothing literally" (ETX-honored immediately),
+ * matching the legacy default-case behavior for unknown commands. */
+static uint16_t typed_fixed_arg_bytes(uint8_t cmd_id) {
+    switch (cmd_id) {
+        case NOTIFY_CMD_QUERY_INFO:         return 0;
+        case NOTIFY_CMD_QUERY_CALLBACK:     return 1;
+        case NOTIFY_CMD_SET_OS:             return 1;
+        case NOTIFY_CMD_APPLY_HOST_CONTEXT: return 3;
+        default:                            return 0xFFFF;
+    }
+}
+
 // Default empty map if user doesn't define them
 static command_map_t empty_command_map[1] = {0};
 static layer_map_t empty_layer_map[1] = {0};
@@ -645,10 +686,16 @@ static void send_typed_response(uint8_t cmd_id, const uint8_t *payload, uint8_t 
  * so the legacy 0/1 ack is suppressed. Bypasses process_full_message => no board
  * disable/deactivate side effects (§4.6, invariant 21).
  *
+ * `len` is the number of reassembled bytes in msg_buffer (BUG-3 hardening): each
+ * case validates that `len` carries its command's minimum argument footprint
+ * before indexing into args, and falls through to the default (no-payload ack)
+ * otherwise. This converts a truncated/garbled typed message into a safe no-op
+ * reply instead of silently reading leftover bytes from a prior message.
+ *
  * QUERY_INFO (0x01), QUERY_CALLBACK (0x02), SET_OS (0x03), and APPLY_HOST_CONTEXT
  * (0x05) are implemented here. The reserved 0x04 (VIA-coexist) and any unknown
  * id fall through to the default ([0x51][cmd_id] no payload) — a safe placeholder. */
-static bool handle_typed_command(char *data) {
+static bool handle_typed_command(char *data, uint16_t len) {
     uint8_t cmd_id = (uint8_t)data[1];
 
     switch (cmd_id) {
@@ -668,8 +715,14 @@ static bool handle_typed_command(char *data) {
         }
         /* QUERY_CALLBACK (0x02) — name discovery (§4.6). args[0]=index. The host
          * sweeps i in 0..count to build name->id. Reply: [index][name bytes, NUL-
-         * padded] for a valid index; [index][0x00] (name absent) for out-of-range. */
+         * padded] for a valid index; [index][0x00] (name absent) for out-of-range.
+         * Length guard (BUG-3): require len >= 3 (disc + cmd + index); a truncated
+         * frame falls through to the safe default no-payload ack. */
         case NOTIFY_CMD_QUERY_CALLBACK: {
+            if (len < 3) {
+                send_typed_response(cmd_id, NULL, 0);
+                break;
+            }
             uint8_t index = (uint8_t)data[2];
             size_t cb_size = get_host_callbacks_size();
             host_callback_t *cbs = get_host_callbacks();
@@ -689,8 +742,13 @@ static bool handle_typed_command(char *data) {
         /* SET_OS (0x03) — host-authoritative OS while connected (§4.7). Routes through
          * apply_os_change — the SAME seam as notifier_set_os, so the F9 clear-on-change
          * is NOT duplicated here. os_byte mirrors os_variant_t (0=UNSURE, 1=LINUX,
-         * 2=WINDOWS, 3=MACOS, 4=IOS). Response: [0x51][0x03][ack=1]. */
+         * 2=WINDOWS, 3=MACOS, 4=IOS). Response: [0x51][0x03][ack=1].
+         * Length guard (BUG-3): require len >= 3 (disc + cmd + os_byte). */
         case NOTIFY_CMD_SET_OS: {
+            if (len < 3) {
+                send_typed_response(cmd_id, NULL, 0);
+                break;
+            }
             uint8_t os_byte = (uint8_t)data[2];
             apply_os_change((os_variant_t)os_byte);
             uint8_t payload[1] = { 0x01 };   /* ack = 1 (applied) */
@@ -707,16 +765,27 @@ static bool handle_typed_command(char *data) {
          * The board and host state planes are otherwise independent (§14,
          * invariant 21). Response: [0x51][0x05][ack=1]. */
         case NOTIFY_CMD_APPLY_HOST_CONTEXT: {
+            /* Length guard (BUG-3): require the fixed 5-byte header
+             * (disc + cmd + layer + flags + count) before indexing args; a
+             * truncated frame falls through to the safe default no-payload ack. */
+            if (len < 5) {
+                send_typed_response(cmd_id, NULL, 0);
+                break;
+            }
             uint8_t layer = (uint8_t)data[2];
             uint8_t flags = (uint8_t)data[3];
             uint8_t count = (uint8_t)data[4];
             /* ids[] is the variable-length tail starting at data[5]. Clamp count to
-             * the buffer bound so a malformed/garbled count (e.g. 0xFF) never reads
-             * past msg_buffer (MSG_BUFFER_SIZE). The reassembled tail may carry
-             * stale bytes from a prior message (the typed path does not
-             * NUL-terminate), but apply_host_callbacks skips any id >=
-             * get_host_callbacks_size() (RISK-3), so garbage ids are inert. */
+             * the buffer bound AND to the bytes actually reassembled (BUG-3): a
+             * malformed/garbled count (e.g. 0xFF) must never read past msg_buffer
+             * or into leftover bytes from a prior message. With the length-aware
+             * reassembly the tail is fully present, but the clamp is kept as a
+             * defense-in-depth bound; apply_host_callbacks skips any id >=
+             * get_host_callbacks_size() (RISK-3), so out-of-range ids are inert. */
             uint8_t max_ids = (uint8_t)(MSG_BUFFER_SIZE - 5);
+            if (max_ids > (uint8_t)(len - 5)) {
+                max_ids = (uint8_t)(len - 5);
+            }
             if (count > max_ids) {
                 count = max_ids;
             }
@@ -756,9 +825,16 @@ void hid_notify(uint8_t *data, uint8_t length) {
      * report of a message (msg_index == 0): the discriminator is at data[2] in
      * the first report, but continuation reports carry payload there (which may
      * coincidentally be 0xF0). Legacy strings have a printable data[2]
-     * (0x20-0x7E), never 0xF0, so this routing is transparent to them. */
+     * (0x20-0x7E), never 0xF0, so this routing is transparent to them.
+     *
+     * BUG-1/BUG-2 fix: when entering typed mode, seed typed_literal_remaining
+     * to 2 so the discriminator + cmd_id bytes are consumed LITERALLY (never
+     * mistaken for ETX). Once cmd_id is known the fixed-arg count is added, and
+     * for APPLY_HOST_CONTEXT the variable ids tail count is added after the
+     * fixed header lands. See typed_fixed_arg_bytes() for the per-command map. */
     if (msg_index == 0 && length >= 3 && data[2] == NOTIFY_CMD_DISCRIMINATOR) {
         typed_mode = true;
+        typed_literal_remaining = 2;   /* consume discriminator + cmd_id literally */
     }
 
     // Strip off those 2 identifying characters
@@ -770,8 +846,20 @@ void hid_notify(uint8_t *data, uint8_t length) {
     bool typed_dispatched = false;   /* true iff a typed msg was serviced on ETX this call */
     for (uint8_t i = 0; i < length; i++) {
         char c = (char)data[i];
-        // End of text (ASCII 3) indicates the end of the message.
-        if (c == ETX_TERMINATOR[0]) {
+
+        /* TYPED PATH — length-aware reassembly (BUG-1/BUG-2/BUG-3 fix).
+         * While the command still owes literal argument bytes, append them
+         * verbatim (0x03 INCLUDED — it is a legal binary payload value, e.g.
+         * SET_OS cmd_id 0x03, OS_MACOS os_byte 0x03, or an AHC layer/flags/
+         * count/id of 3). Only once the full argument set is accumulated does
+         * the next 0x03 get honored as the ETX terminator below. This is what
+         * makes SET_OS dispatch (BUG-1) and stops AHC from silently truncating
+         * on a 0x03 argument (BUG-2). */
+        bool typed_literal = (typed_mode && typed_literal_remaining > 0);
+
+        // End of text (ASCII 3) indicates the end of the message — but ONLY on
+        // the legacy path or once the typed command's args are fully consumed.
+        if (c == ETX_TERMINATOR[0] && !typed_literal) {
             // PRD F2.2: an oversized message (one that triggered `dropping`) is
             // dropped in its entirety — do NOT dispatch its partial buffer, and
             // do NOT let leftover bytes prefix the next message. Only dispatch
@@ -781,8 +869,10 @@ void hid_notify(uint8_t *data, uint8_t length) {
                     /* Typed path (§4.6): handle_typed_command owns the [0x51]
                      * response and bypasses process_full_message (no board
                      * disable/deactivate). NO sanitize — the typed payload is
-                     * binary (cmd_id + args), not an ASCII string. */
-                    match = handle_typed_command(msg_buffer);
+                     * binary (cmd_id + args), not an ASCII string. Pass the
+                     * reassembled length so handlers can reject a truncated
+                     * frame (BUG-3) instead of reading leftover bytes. */
+                    match = handle_typed_command(msg_buffer, msg_index);
                     typed_dispatched = true;   /* suppress the legacy 0/1 ack below */
                 } else {
                     // Sanitize the buffer in place, iterating by explicit length so an
@@ -796,7 +886,8 @@ void hid_notify(uint8_t *data, uint8_t length) {
             // next message starts from a clean buffer.
             msg_index = 0; // Reset the buffer for the next message
             dropping = false;
-            typed_mode = false;   /* RISK-1: reset at every ETX boundary */
+            typed_mode = false;          /* RISK-1: reset at every ETX boundary */
+            typed_literal_remaining = 0; /* BUG-1/2: clear typed reassembly state */
             break;
         } else if (dropping) {
             // Mid-oversized-message: silently ignore all payload bytes until the
@@ -806,12 +897,42 @@ void hid_notify(uint8_t *data, uint8_t length) {
             // Append character if space is available.
             if (msg_index < (MSG_BUFFER_SIZE - 1)) {
                 msg_buffer[msg_index++] = c;
+
+                /* TYPED literal accounting (BUG-1/BUG-2 fix): if this byte was
+                 * consumed as a typed literal, decrement the counter and extend
+                 * it when a length-defining byte lands:
+                 *   - msg_index == 2: cmd_id just written -> add its fixed arg
+                 *     count (typed_fixed_arg_bytes). 0xFFFF (unknown cmd) is
+                 *     treated as 0 so unknown commands still terminate at ETX
+                 *     and hit the default-case ack.
+                 *   - msg_index == 5: AHC fixed header (layer/flags/count) just
+                 *     completed -> read count = data[4] and add `count` more
+                 *     literal bytes for the ids tail. count is clamped to the
+                 *     buffer bound so a malicious 0xFF count cannot make us
+                 *     consume past MSG_BUFFER_SIZE (defense in depth; the AHC
+                 *     handler re-clamps against the reassembled length). */
+                if (typed_literal) {
+                    typed_literal_remaining--;
+                    if (msg_index == 2) {
+                        uint8_t cmd_id = (uint8_t)msg_buffer[1];
+                        uint16_t fixed = typed_fixed_arg_bytes(cmd_id);
+                        if (fixed != 0xFFFF) {
+                            typed_literal_remaining += fixed;
+                        }
+                    } else if (msg_index == 5 &&
+                               (uint8_t)msg_buffer[1] == NOTIFY_CMD_APPLY_HOST_CONTEXT) {
+                        uint8_t ahc_count = (uint8_t)msg_buffer[4];
+                        uint16_t room = (uint16_t)((MSG_BUFFER_SIZE - 1) - msg_index);
+                        typed_literal_remaining += (ahc_count > room) ? room : ahc_count;
+                    }
+                }
             } else {
                 // Buffer overflow – enter drop mode: reset the index and discard
                 // the rest of this (oversized) message until ETX (PRD F2.2).
                 msg_index = 0;
                 dropping = true;
-                typed_mode = false;   /* RISK-1: dropped msg clears typed classification */
+                typed_mode = false;          /* RISK-1: dropped msg clears typed classification */
+                typed_literal_remaining = 0; /* BUG-1/2: clear typed reassembly state */
             }
         }
     }
