@@ -1,0 +1,11 @@
+h1.0 Bug Fix Requirements
+ h2.0 Overview
+ h2.1 Critical Issues (Must Fix)
+ h2.2 Major Issues (Should Fix)
+  h3.0 Issue 1: PRD §11.2C acceptance gate has a wrong expected value — the matcher is correct, the gate cannot pass
+ h2.3 Minor Issues (Nice to Fix)
+  h3.1 Issue 2: sanitize_string truncates at a NUL byte instead of stripping it (unreachable in normal operation)
+  h3.2 Issue 3: CONSOLE_ENABLE debug block omits the layer-track match/miss print
+ h2.4 Testing Summary
+---
+code:3 para:13 list:3 quote:1
