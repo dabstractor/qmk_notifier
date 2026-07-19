@@ -81,14 +81,14 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Fix stale README test results block (Issue 2)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Update README.md lines ~540-545 to accurately reflect that all 64 test_notifier_host cases pass (including the four SET_OS blocks), and that the SET_OS 0x03/ETX collision is resolved by the length-aware typed reassembly already shipping in notifier.c.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Update README.md Overall Test Results block to reflect 64/64 host cases passing",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_16d737de7a3e/bugfix/001_9bb28e448bd3/architecture/system_context.md. The README.md 'Overall Test Results' block at lines ~536-548 currently states 'the four SET_OS blocks are currently pending an upstream ETX-collision framing fix in notifier.c' and 'the remaining 57 assertions pass'. This is stale: run_notifier_stub_tests.sh reports 'Total tests run: 64 / passed: 64 / failed: 0'. The length-aware typed reassembly (typed_literal_remaining) already ships and resolves the 0x03/ETX collision. The README also has a 'test_notifier_host (64 cases)' description at lines ~516-522 that lists the test coverage accurately (including SET_OS) — only the results block is wrong.\n2. INPUT: README.md current content at lines ~536-548. The verified test result: 64/64 passing (from run_notifier_stub_tests.sh).\n3. LOGIC: Implement per PRD §11 acceptance gate and Issue 2 (h3.1). Replace the stale block (lines ~540-545) that says SET_OS is pending a fix with accurate text stating all 64 test_notifier_host cases pass, including the four SET_OS blocks, and that the SET_OS cmd_id 0x03 / ETX terminator collision is resolved by the length-aware typed reassembly in notifier.c. Do NOT change the test coverage description at lines ~516-522 (it is already accurate). Do NOT change the pattern-match corpus results (2023/2023) or dispatch/os results (14/14, 31/31) — those are correct.\n4. OUTPUT: Updated README.md where the Overall Test Results block accurately shows test_notifier_host: 64/64 cases passing, no pending fixes. A reader will correctly understand SET_OS is functional.\n5. DOCS: This IS the documentation fix — no separate docs subtask needed.",
@@ -104,14 +104,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Add firmware-budget NFA matcher fidelity test (Issue 3)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Create a new test suite test_fidelity_nfa128.c compiled with -DNFA_MAX_PATTERN=128 and register it in run_all_tests.sh so the matcher is exercised at the firmware production budget. This closes the fidelity gap where the 9 existing pattern suites run at NFA_MAX_PATTERN=2048 (host/test default) while firmware uses 128.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Create test_fidelity_nfa128.c and register in run_all_tests.sh",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_16d737de7a3e/bugfix/001_9bb28e448bd3/architecture/test_infrastructure.md for the exact insertion points and compile/run patterns. The 9 existing pattern suites in run_all_tests.sh (lines 11-19) compile pattern_match.c directly, so NFA_MAX_PATTERN defaults to 2048 (the #ifndef guard at pattern_match.c:286-291). Only notifier.c #defines it to 128 (notifier.c:14). The new suite must compile with -DNFA_MAX_PATTERN=128 to override the default. The result-grep contract for run_all_tests.sh requires main() to print 'Total tests run:' / 'Tests passed:' / 'Tests failed:'. Do NOT add -DNFA_MAX_PATTERN=128 to the existing 9 suites (test_memory_stress intentionally needs 2048).\n2. INPUT: pattern_match.c (628 lines) with NFA_MAX_PATTERN guard at line 286, pattern_match.h (API: pattern_match(), free_parsed_pattern()). The compile-time guard at notifier.c:28-30: `typedef char nfa_budget_check[(NFA_MAX_PATTERN <= 128) ? 1 : -1];` — this only checks the BUDGET, not per-pattern fit. The NEW() macro at pattern_match.c:~365 clamps state allocation to NFA_MAX_STATES (reuses last slot on overflow), so a pattern exceeding the budget silently degrades instead of erroring.\n3. LOGIC: Implement per PRD §7.9/§11.1/§11.3 and Issue 3 (h3.2). (A) Create test_fidelity_nfa128.c following the test_pattern_match.c structure: file-scope counters (tests_run, tests_passed, tests_failed), a run_test() helper or simple inline assertions, and a main() that prints 'Total tests run:' / 'Tests passed:' / 'Tests failed:'. Key test cases: (i) A pattern with processed-pattern length at exactly 128 bytes — verify it matches correctly. (ii) A pattern with processed-pattern length at 129+ bytes — verify it is clamped by the NFA state pool (NEW() reuses last slot) and does NOT match incorrectly (or returns a safe no-match). The simplest way to create a long processed pattern is a long literal string or repeated character class. (iii) A normal short pattern (e.g. 'hello') — verify it still matches at the 128 budget (smoke test). (B) Add to run_all_tests.sh compile block (after line 19): `gcc -o test_fidelity_nfa128 test_fidelity_nfa128.c pattern_match.c -I. -DNFA_MAX_PATTERN=128 -std=c99`. (C) Add to run_all_tests.sh run sequence (after line ~104): `run_test 'NFA-128 Fidelity Gate' 'test_fidelity_nfa128'`. Mock: none needed — pattern_match.c is self-contained.\n4. OUTPUT: New file test_fidelity_nfa128.c and modified run_all_tests.sh. The new suite must compile cleanly with -Wall and pass all its assertions. The existing 9 suites must remain unaffected (2023/2023). The aggregate total in run_all_tests.sh increases by the new test count.\n5. DOCS: [Mode A] No docs update needed for this subtask — the test is internal infrastructure with no user-facing surface. The README test results section (updated by P1.M2.T1.S1 and P1.M2.T4.S1) will reflect the new suite count.",
