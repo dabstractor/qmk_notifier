@@ -157,10 +157,15 @@ bounded read — a non-capable/offline device). See `PRD.md` §7 and §10.
   firmware safely no-matches it), the command byte (`0x01` QueryInfo, `0x02`
   QueryCallback, `0x03` SetOs, `0x05` ApplyHostContext), args, and ETX. Typed
   commands reuse the same multi-report burst-write and device cache as legacy strings
-- **Reply parsing:** after each burst, one 32-byte IN report is read with a bounded
-  timeout. `response[0] == 0x51` ⇒ typed reply (decoded by the command-echo byte
-  into `Info`/`CallbackName`/`Ack`); `0`/`1` ⇒ legacy match-bool; no reply ⇒
-  `Timeout` (a non-capable/offline device — the caller stays in string-only mode)
+- **Reply capture & parsing (v0.3.1):** the firmware emits one 32-byte reply per
+  report processed, so after each burst-write the crate reads up to `batch_count`
+  replies and retains the **last** non-empty one — the reply to the ETX-terminating
+  report, which carries the real result. (A non-blocking IN-buffer drain **before**
+  each send first flushes any stale replies left by a prior command, so they cannot
+  contaminate the capture.) `response[0] == 0x51` ⇒ typed reply (decoded by the
+  command-echo byte into `Info`/`CallbackName`/`Ack`); `0`/`1` ⇒ legacy match-bool;
+  no reply ⇒ `Timeout` (a non-capable/offline device — the caller stays in
+  string-only mode)
 - Configurable for any QMK keyboard with Raw HID support
 
 ## Integration with QMK Keyboards
