@@ -751,6 +751,77 @@ fn device_matches(
 mod tests {
     use super::*;
     use crate::{CommandResponse, HostOs, RunCommand};
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+
+    // === FakeHid test double (P1.M1.T2.S1) =====================================
+    // An in-process stand-in for `hidapi::HidDevice` that implements [`RawHid`],
+    // so the (generic) [`burst_to_one`] can be unit-tested without a physical
+    // keyboard. Models the firmware's reply semantics with two reply queues:
+    //
+    // - `pre_write_replies`  — stale IN-buffer data read BEFORE any `write()`
+    //   (the kind a prior send leaves behind; flushed by the Issue-3 pre-send
+    //   drain in P1.M1.T3.S1).
+    // - `post_write_replies` — the firmware's fresh per-report replies read
+    //   AFTER `write()` (one 32-byte reply per report; PRD §4.4).
+    //
+    // A `Cell<bool>` "written" latch selects which queue `read_timeout` pops:
+    // before the first `write()` it serves `pre_write_replies`, after it serves
+    // `post_write_replies` (one-shot latch — never reset; FakeHid is single-use
+    // per test). An empty queue returns `Ok(0)` to mirror hidapi's
+    // `read_timeout` timeout/no-data semantics (NOT an error).
+    struct FakeHid {
+        pre_write_replies: RefCell<VecDeque<Vec<u8>>>,
+        post_write_replies: RefCell<VecDeque<Vec<u8>>>,
+        written: Cell<bool>,
+        /// Recorded `write()` calls, for asserting how many reports were sent.
+        writes: RefCell<Vec<Vec<u8>>>,
+    }
+
+    impl RawHid for FakeHid {
+        fn write(&self, data: &[u8]) -> Result<usize, hidapi::HidError> {
+            self.writes.borrow_mut().push(data.to_vec());
+            self.written.set(true);
+            Ok(data.len())
+        }
+        fn read_timeout(&self, buf: &mut [u8], _timeout: i32) -> Result<usize, hidapi::HidError> {
+            let queue = if self.written.get() {
+                &self.post_write_replies
+            } else {
+                &self.pre_write_replies
+            };
+            match queue.borrow_mut().pop_front() {
+                Some(reply) => {
+                    let n = reply.len().min(buf.len());
+                    buf[..n].copy_from_slice(&reply[..n]);
+                    Ok(n)
+                }
+                None => Ok(0), // empty queue ⇒ timeout/no-data (matches hidapi)
+            }
+        }
+    }
+
+    impl FakeHid {
+        /// Empty double, written-latch unset (reads serve the pre-write queue).
+        fn new() -> Self {
+            Self {
+                pre_write_replies: RefCell::new(VecDeque::new()),
+                post_write_replies: RefCell::new(VecDeque::new()),
+                written: Cell::new(false),
+                writes: RefCell::new(Vec::new()),
+            }
+        }
+        /// Queue a reply that `read_timeout` will return BEFORE any `write()`
+        /// (stale IN-buffer data from a prior send).
+        fn push_pre(&self, reply: Vec<u8>) {
+            self.pre_write_replies.borrow_mut().push_back(reply);
+        }
+        /// Queue a reply that `read_timeout` will return AFTER the first
+        /// `write()` (a firmware reply to a sent report).
+        fn push_post(&self, reply: Vec<u8>) {
+            self.post_write_replies.borrow_mut().push_back(reply);
+        }
+    }
 
     const DEV_VID: u16 = 0xFEED;
     const DEV_PID: u16 = 0x0000;
@@ -1331,5 +1402,88 @@ mod tests {
                 board_rules_present: false,
             }
         );
+    }
+
+    #[test]
+    fn fakehid_write_records_calls_and_switches_read_queue() {
+        let fake = FakeHid::new();
+        fake.push_pre(vec![0xAA; 33]); // stale IN-buffer byte (Issue-3 shape)
+        fake.push_post({
+            let mut r = vec![0u8; 33];
+            r[0] = 1;
+            r
+        }); // firmware match reply
+
+        // BEFORE any write(): read_timeout serves the PRE-write (stale) queue.
+        let mut buf = [0u8; 33];
+        let n = fake.read_timeout(&mut buf, 0).expect("pre-write read Ok");
+        assert_eq!(n, 33);
+        assert_eq!(
+            buf[0], 0xAA,
+            "pre-write read must pop the stale pre-queue reply"
+        );
+
+        // write() records the call and flips the written latch to the POST queue.
+        let report = [0x00u8, 0x81, 0x9F, 0x03];
+        fake.write(&report).expect("write Ok");
+        assert_eq!(
+            fake.writes.borrow().len(),
+            1,
+            "write must record exactly one call"
+        );
+        assert_eq!(
+            fake.writes.borrow()[0],
+            report.to_vec(),
+            "write must record the exact bytes sent"
+        );
+
+        // AFTER write(): read_timeout serves the POST-write (firmware) queue.
+        let n = fake.read_timeout(&mut buf, 0).expect("post-write read Ok");
+        assert_eq!(n, 33);
+        assert_eq!(
+            buf[0], 1,
+            "post-write read must pop the firmware reply, not stale data"
+        );
+    }
+
+    #[test]
+    fn fakehid_read_timeout_returns_zero_when_queue_empty() {
+        let fake = FakeHid::new();
+        // Empty pre-write queue ⇒ Ok(0), mirroring hidapi read_timeout timeout
+        // semantics (NOT an Err). burst_to_one's drain relies on this to stop.
+        let mut buf = [0u8; 33];
+        let n = fake
+            .read_timeout(&mut buf, 0)
+            .expect("empty queue must be Ok, not Err");
+        assert_eq!(n, 0, "empty queue ⇒ Ok(0) (hidapi timeout semantics)");
+        // buf left untouched (no copy on the None arm).
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn fakehid_drives_generic_burst_to_one() {
+        // Proves FakeHid is usable as `burst_to_one(&fake, …)` (the T: RawHid
+        // bound) and that one queued reply is captured. Asserts ONLY on success,
+        // write-count, and reply presence — NOT the reply's byte value, which is
+        // what the T2.S2 capture rewrite changes (keeps this test stable).
+        let fake = FakeHid::new();
+        fake.push_post({
+            let mut r = vec![0u8; 33];
+            r[0] = 1;
+            r
+        }); // one firmware reply
+
+        let payload = vec![0u8; 10]; // 10 bytes ⇒ 1 report (PAYLOAD_PER_REPORT=30)
+        let batch_count = batches_for(&payload);
+        assert_eq!(batch_count, 1);
+
+        let (success, reply) = burst_to_one(&fake, &payload, batch_count, false);
+        assert!(success, "write must succeed (FakeHid::write returns Ok)");
+        assert_eq!(
+            fake.writes.borrow().len(),
+            batch_count,
+            "burst_to_one must write exactly batch_count reports"
+        );
+        assert!(reply.is_some(), "the one queued reply must be captured");
     }
 }

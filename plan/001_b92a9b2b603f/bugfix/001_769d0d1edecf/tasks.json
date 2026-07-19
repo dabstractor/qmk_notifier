@@ -59,14 +59,14 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Fix Multi-Report Reply Capture (Issue 1)",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Rewrite burst_to_one's reply-capture logic so that for a multi-report message (batch_count > 1), the LAST non-empty reply is captured instead of the FIRST. The firmware sends one reply per report; only the final (ETX-report) reply carries the real result (match-bool or typed 0x51 reply). The current code captures the first reply (an intermediate [0]) and discards the real result via the drain loop.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Add FakeHid test double under #[cfg(test)]",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S2"
@@ -83,7 +83,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Rewrite capture logic to keep last reply (ETX-report reply)",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S2"
@@ -100,7 +100,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S3",
                   "title": "Add multi-report reply-capture regression test",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1",
