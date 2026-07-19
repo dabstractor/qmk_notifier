@@ -6,7 +6,7 @@ A high-performance Rust application that sends string commands to QMK keyboards 
 
 I built `qmk_notifier` to communicate with QMK-powered keyboards from your desktop. It efficiently handles serializing messages and sending them in batches to overcome the 32-byte HID report size limitation, enabling seamless communication with your keyboard for dynamic layer and command management.
 
-This crate is the **transport layer** of a three-part ecosystem (see `SPEC.md` for the full contract):
+This crate is the **transport layer** of a three-part ecosystem (see `PRD.md` for the full contract):
 - **qmk_notifier** (this crate): Rust library + CLI that owns Raw-HID wire framing, the device cache, and burst-write (round B adds typed-command transport + reply parsing). Transport only — it does no matching.
 - **[qmkonnect](https://github.com/dabstractor/qmkonnect)**: Cross-platform desktop daemon that detects the foreground window, runs the host-side matcher (`rules.toml`), and sends via this crate.
 - **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: QMK firmware module that receives, pattern-matches, and toggles layers/features. It owns the canonical wire protocol.
@@ -111,7 +111,7 @@ match run(params) {
 
 > Round B (v0.3.0) changes `run()` to return `Result<CommandResponse, QmkError>`
 > and adds typed-command variants (`QueryInfo`, `QueryCallback`, `SetOs`,
-> `ApplyHostContext`). See `SPEC.md` §10.
+> `ApplyHostContext`). See `PRD.md` §10.
 
 ## Technical Details
 
