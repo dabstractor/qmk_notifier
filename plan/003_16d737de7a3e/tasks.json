@@ -237,7 +237,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Extend qmk_stubs.c to capture full 32-byte response; add stub_get_last_response() accessor",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T2.S3"
