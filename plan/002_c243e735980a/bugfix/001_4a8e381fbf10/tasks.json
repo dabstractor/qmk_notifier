@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Bug Fix Remediation — PRD Validation Findings",
-      "status": "Researching",
+      "status": "Ready",
       "description": "Address three issues identified during end-to-end PRD validation of the qmk-notifier multi-OS delta (session 002_c243e735980a). Issue 1 (Major): add a regression test locking in correct @-literal / \\w-excludes-@ semantics for the PRD §11.2C gate. Issue 2 (Minor): fix sanitize_string to strip NUL bytes by explicit length instead of truncating at them. Issue 3 (Minor): add layer-track match/miss print to the CONSOLE_ENABLE debug block per PRD §8.6 step 9. No critical bugs; core matching/dispatch/reassembly functionality is verified correct and must remain untouched.",
       "milestones": [
         {
@@ -100,7 +100,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Issue 3 — CONSOLE_ENABLE Layer Track Debug Print + Changeset-Level Docs Sync",
-          "status": "Researching",
+          "status": "Ready",
           "description": "The #ifdef CONSOLE_ENABLE block at notifier.c:417-434 prints only the command-track match/miss. The PRD §8.6 step 9 says 'print per-track match/miss.' Add a layer-track uprintf mirroring the command track. Then sync changeset-level documentation (README.md test counts, overview) across all three issues.",
           "tasks": [
             {
@@ -130,14 +130,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Sync changeset-level documentation",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Final documentation sweep across all three bug fixes. Update README.md test count table to reflect new test cases added to test_pattern_match.c (Issue 1) and test_notifier_dispatch.c (Issue 2). Review and update any overview/feature docs that reference test counts, sanitize_string behavior, or CONSOLE_ENABLE debug output.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Update README.md test counts and cross-cutting documentation",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
