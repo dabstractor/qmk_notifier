@@ -1,6 +1,7 @@
 *.o
 test_*
 !test_*.c
+!test_*.md
 
 # Build artifacts
 dist/
