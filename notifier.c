@@ -336,8 +336,6 @@ bool process_full_message(char *data) {
     int length = strlen(data);
     command_map_t *command_found = NULL;
     uint8_t layer_found = LAYER_UNSET;
-    signed int found_command_match = -1;
-    signed int found_layer_match = -1;
 
     if ((size_t)length >= sizeof(received_command)) {
         return false;
@@ -346,45 +344,73 @@ bool process_full_message(char *data) {
     memcpy(received_command, data, length);
     received_command[length] = '\0';
 
-    // Always disable current command first
+    // Always disable current command first (step 3 — disable-before-scan).
     disable_command();
 
-    // Get the current command map and size
-    command_map_t *cmd_map = get_command_map();
-    size_t cmd_map_size = get_command_map_size();
+    /* Resolve the maps for current_os (§8.6 step 2):
+     *   - OS-specific maps come from the per-OS accessors (select_*_map_os);
+     *     they return {NULL, 0} when current_os has no per-OS map (the boot
+     *     state OS_UNSURE, or no DEFINE_*_OS macro for this OS). A NULL map /
+     *     size 0 makes the OS scan below run 0 iterations.
+     *   - Default maps come from the user's DEFINE_SERIAL_* (or the weak
+     *     {empty_*_map, 0} defaults).
+     * When no per-OS map exists, the OS scan is a 0-iteration no-op and the
+     * default map is scanned — this IS the backward-compat guarantee
+     * (invariant 19), so no #ifdef is needed. */
+    command_map_t *os_cmd_map;   size_t os_cmd_size;
+    layer_map_t   *os_layer_map; size_t os_layer_size;
+    select_command_map_os(current_os, &os_cmd_map,   &os_cmd_size);
+    select_layer_map_os  (current_os, &os_layer_map, &os_layer_size);
+    command_map_t *def_cmd_map   = get_command_map();   size_t def_cmd_size   = get_command_map_size();
+    layer_map_t   *def_layer_map = get_layer_map();     size_t def_layer_size = get_layer_map_size();
 
-    // Get the current layer map and size
-    layer_map_t *lyr_map = get_layer_map();
-    size_t lyr_map_size = get_layer_map_size();
-
-    // Command map checks
-    for (size_t i = 0; i < cmd_map_size; i++) {
-        if (match_pattern(cmd_map[i].pattern, received_command, cmd_map[i].case_sensitive)) {
-            found_command_match = (signed int)i;
-            command_found = &cmd_map[i];
+    /* COMMAND TRACK — OS-first, default-fallback, first-match-wins (§8.6 step 4).
+     * OS-specific map scanned FIRST; a match wins and the default map for this
+     * track is NOT scanned. No OS map (or no match in it) => scan the default
+     * map (§2 F8.4). The two tracks decide independently (§2 F8.5). */
+    for (size_t i = 0; i < os_cmd_size; i++) {
+        if (match_pattern(os_cmd_map[i].pattern, received_command, os_cmd_map[i].case_sensitive)) {
+            command_found = &os_cmd_map[i];
             break;
         }
     }
-
-    // Layer map checks
-    for (size_t i = 0; i < lyr_map_size; i++) {
-        if (match_pattern(lyr_map[i].pattern, received_command, lyr_map[i].case_sensitive)) {
-            found_layer_match = (signed int)i;
-            layer_found = lyr_map[i].layer;
-            break;
+    if (command_found == NULL) {
+        for (size_t i = 0; i < def_cmd_size; i++) {
+            if (match_pattern(def_cmd_map[i].pattern, received_command, def_cmd_map[i].case_sensitive)) {
+                command_found = &def_cmd_map[i];
+                break;
+            }
         }
     }
 
-    // Always deactivate the current layer first
+    /* LAYER TRACK — same rule, INDEPENDENT of the command track (§8.6 step 5 /
+     * §2 F8.5): a layer may resolve from the OS map while a command resolves
+     * from the default map, or vice versa. */
+    for (size_t i = 0; i < os_layer_size; i++) {
+        if (match_pattern(os_layer_map[i].pattern, received_command, os_layer_map[i].case_sensitive)) {
+            layer_found = os_layer_map[i].layer;
+            break;
+        }
+    }
+    if (layer_found == LAYER_UNSET) {
+        for (size_t i = 0; i < def_layer_size; i++) {
+            if (match_pattern(def_layer_map[i].pattern, received_command, def_layer_map[i].case_sensitive)) {
+                layer_found = def_layer_map[i].layer;
+                break;
+            }
+        }
+    }
+
+    // Always deactivate the current layer first (step 6 — deactivate-before-activate).
     deactivate_layer();
 
-    // Enable new command if found
-    if (found_command_match != -1 && command_found != NULL) {
+    // Enable new command if found (step 7 — fires on_enable).
+    if (command_found != NULL) {
         enable_command(command_found);
     }
 
-    // Activate new layer if found
-    if (found_layer_match != -1 && layer_found != LAYER_UNSET) {
+    // Activate new layer if found (step 8 — layer_on).
+    if (layer_found != LAYER_UNSET) {
         activate_layer(layer_found);
     }
 
@@ -396,16 +422,51 @@ bool process_full_message(char *data) {
         }
     }
 
-    if (found_command_match != -1) {
-        uprintf("Matched message %s on command: %s\n", received_command, cmd_map[found_command_match].pattern);
+    /* DEBUG (step 9): print per-track match/miss. Use the pointer
+     * command_found->pattern (already set to whichever entry — OS or default —
+     * matched) rather than re-indexing by a single-map variable name; after the
+     * split the matched map could be either (findings F2). GS is shown as '|'. */
+    if (command_found != NULL) {
+        uprintf("Matched message %s on command: %s\n", received_command, command_found->pattern);
     } else {
         uprintf("Did not match message %s on any command\n", received_command);
     }
     #endif
 
-    return found_command_match != -1 || found_layer_match != -1;
+    return command_found != NULL || layer_found != LAYER_UNSET;
 }
 
+/* notifier_set_os — the OS selector (§8.7). Sole mutation point for current_os
+ * (invariant 17 / §2 F8.2): the module never calls detected_host_os(), so there
+ * is no link dependency on the OS-detection subsystem — the OS is PUSHED in by
+ * the keymap (conventionally from process_detected_host_os_kb, §10.1 step 3).
+ *
+ * Contract (§2 F9):
+ *   - IDEMPOTENT on an unchanged value (no-op; F9.3): repeated stable-detection
+ *     callbacks (e.g. macOS-on-ARM's delayed stability) do not flap state.
+ *   - On a CHANGED value it CLEARS all notifier state before recording the new
+ *     OS: disable_command() fires the previous command's on_disable if active,
+ *     deactivate_layer() turns off the active notifier layer if any (F9.1). This
+ *     guarantees no layer/command chosen under the previous OS's maps survives.
+ *   - It does NOT re-dispatch the last message (F9.2): the next focus-change
+ *     message from the host re-establishes state under the new maps.
+ *
+ * Symbol-name parity: the keymap's DEFINE_SERIAL_COMMANDS_OS(OS_MACOS,…) /
+ * DEFINE_SERIAL_LAYERS_OS(OS_MACOS,…) macros (##os token-paste in notifier.h)
+ * generate the strong _notifier_get_*_map_OS_MACOS[_size] symbols that override
+ * the weak defaults; this function only flips current_os so the next dispatch's
+ * select_*_map_os() resolves the override. */
+void notifier_set_os(os_variant_t os) {
+    if (os == current_os) return;                 /* idempotent: no flap on repeat (F9.3) */
+    #ifdef CONSOLE_ENABLE
+    uprintf("notifier: OS %u -> %u; clearing state\n", (unsigned)current_os, (unsigned)os);
+    #endif
+    current_os = os;
+    disable_command();      /* fires prev on_disable if a command was active (F9.1) */
+    deactivate_layer();     /* turns off the active notifier layer if any (F9.1)    */
+    /* Intentionally do NOT re-dispatch the last message. The next focus-change
+     * message from the host re-establishes state under the new maps (F9.2). */
+}
 
 void hid_notify(uint8_t *data, uint8_t length) {
     // Check for our identifiers to ensure no conflicts with other libraries
