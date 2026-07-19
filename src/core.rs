@@ -375,6 +375,125 @@ fn burst_to_one(
     (true, reply)
 }
 
+/// Read ONE typed reply from `interface` after a command burst, then classify it.
+///
+/// The bounded read primitive for the typed-command path. It blocks up to
+/// [`REPLY_READ_TIMEOUT_MS`] for a single 32-byte IN report (the firmware sends
+/// exactly one reply per report, `RAW_REPORT_SIZE = 32`), then:
+/// - `Ok(n)` with `n > 0` ⇒ [`classify_response`] decodes it (typed if
+///   `buf[0] == 0x51` & echo matches `expected_cmd`; legacy `0`/`1`; else Timeout).
+/// - `Ok(0)` (poll timed out — no reply) ⇒ `Ok(CommandResponse::Timeout)`. This is
+///   **not an error**: a non-capable (legacy) device never replies to a typed
+///   command, and the caller (the run() handshake, P4.M2.T1) treats Timeout as
+///   "stay in string-only mode" (PRD §8, §10.2).
+/// - `Err` ⇒ `Err(QmkError::HidReadError)` (a real HID transport failure).
+///
+/// Unlike [`burst_to_one`]'s drain loop, this reads EXACTLY ONE report (not a
+/// bounded drain) — that one report IS the typed reply. `expected_cmd` is the
+/// command-ID byte we sent (e.g. [`CMD_QUERY_INFO`]); it guards against decoding a
+/// stale reply left in the IN buffer from a prior command. The 33-byte buffer
+/// matches the drain loop's sizing; QMK raw HID uses report ID 0, so `read_timeout`
+/// returns report DATA at `buf[0]` (no report-ID prefix on read), i.e. `buf[0] ==
+/// 0x51` for a typed reply.
+///
+/// Consumer: [`burst_and_read_one`] (P1.M1.T3.S1); the `run()` typed dispatch via
+/// the send path (P1.M1.T3.S2).
+#[allow(dead_code)]
+fn read_typed_response(
+    interface: &HidDevice,
+    expected_cmd: u8,
+    verbose: bool,
+) -> Result<crate::CommandResponse, QmkError> {
+    use crate::CommandResponse;
+    let mut buf = [0u8; REPORT_LENGTH + 1]; // 33 bytes — matches the drain loop
+    match interface.read_timeout(&mut buf, REPLY_READ_TIMEOUT_MS) {
+        Ok(n) if n > 0 => {
+            if verbose {
+                println!("Read {} typed-reply byte(s): {:?}", n, &buf[..n]);
+            }
+            Ok(classify_response(&buf[..n], expected_cmd))
+        }
+        Ok(_) => {
+            // Ok(0): no data within REPLY_READ_TIMEOUT_MS (poll timed out). NOT an
+            // error — a legacy/non-capable device simply doesn't reply to typed
+            // commands. The caller decides (PRD §10.2 ⇒ string-only fallback).
+            if verbose {
+                println!(
+                    "No typed reply within {} ms (timeout).",
+                    REPLY_READ_TIMEOUT_MS
+                );
+            }
+            Ok(CommandResponse::Timeout)
+        }
+        Err(e) => {
+            if verbose {
+                println!("Error reading typed reply: {}", e);
+            }
+            Err(QmkError::HidReadError(e.to_string()))
+        }
+    }
+}
+
+/// Burst-write `data` to `interface` as `batch_count` reports, then read ONE typed
+/// reply (instead of draining all). The typed-command counterpart to
+/// [`burst_to_one`].
+///
+/// The write half is byte-for-byte identical to [`burst_to_one`]'s write loop (same
+/// `[0x00][0x81][0x9F]` per-report header, same 30-byte chunking). The read half
+/// differs: where [`burst_to_one`] captures the first reply and then drains surplus
+/// IN reports, this reads **exactly one** reply via [`read_typed_response`] and
+/// returns the parsed [`crate::CommandResponse`] without a follow-on drain.
+///
+/// Backward compatibility: the legacy [`crate::RunCommand::SendMessage`] path keeps
+/// using [`burst_to_one`] (capture + drain) unchanged. Only typed commands route
+/// through this capture-and-parse path — wired in P1.M1.T3.S2.
+///
+/// Returns the parsed reply, or [`QmkError::SendReportError`] on a write failure
+/// (mirrors [`burst_to_one`]'s write-error handling, surfaced as an error here
+/// since the caller can't proceed without a successful send). A read timeout is
+/// **not** an error — it surfaces as `Ok(CommandResponse::Timeout)`.
+///
+/// Consumer: the `run()` typed dispatch (P1.M1.T3.S2).
+#[allow(dead_code)]
+fn burst_and_read_one(
+    interface: &HidDevice,
+    data: &[u8],
+    batch_count: usize,
+    expected_cmd: u8,
+    verbose: bool,
+) -> Result<crate::CommandResponse, QmkError> {
+    // --- Write half: identical to burst_to_one's write loop. ---
+    let mut request_data = [0u8; REPORT_LENGTH + 1];
+    request_data[1] = 0x81;
+    request_data[2] = 0x9F;
+
+    for batch in 0..batch_count {
+        let start_idx = batch * PAYLOAD_PER_REPORT;
+        let end_idx = (start_idx + PAYLOAD_PER_REPORT).min(data.len());
+        let batch_data = &data[start_idx..end_idx];
+
+        request_data[3..].fill(0); // clear reused payload tail
+        if !batch_data.is_empty() {
+            request_data[3..3 + batch_data.len()].copy_from_slice(batch_data);
+        }
+
+        if verbose {
+            println!("Sending batch {}/{}", batch + 1, batch_count);
+            println!("{:?}", request_data);
+        }
+
+        if let Err(e) = interface.write(&request_data) {
+            if verbose {
+                println!("Error on batch {}: {}", batch + 1, e);
+            }
+            return Err(QmkError::SendReportError(e));
+        }
+    }
+
+    // --- Read half: ONE typed reply (bounded timeout, NOT a drain loop). ---
+    read_typed_response(interface, expected_cmd, verbose)
+}
+
 /// Number of reports needed to carry `data.len()` payload bytes (0 when empty).
 fn batches_for(data: &[u8]) -> usize {
     (data.len() + REPORT_LENGTH - 3) / PAYLOAD_PER_REPORT
@@ -547,6 +666,44 @@ fn parse_callback_name(bytes: &[u8]) -> Option<String> {
         return None;
     }
     String::from_utf8(name_bytes.to_vec()).ok()
+}
+
+/// Classify a captured reply, validating the typed command-echo against
+/// `expected_cmd`.
+///
+/// The read-side counterpart to [`parse_reply`]: it adds ONE guard the parser alone
+/// can't enforce — that a typed reply (`buf[0] == RESPONSE_MARKER`) echoes back the
+/// command we actually sent (`buf[1] == expected_cmd`). A mismatch means a stale
+/// reply is sitting in the IN buffer (e.g. a leftover from a previous command), so
+/// we defensively treat it as [`crate::CommandResponse::Timeout`] (the device is
+/// "non-capable for this command right now") rather than mis-decoding it into the
+/// wrong [`crate::CommandResponse`] variant.
+///
+/// Logic (canonical layout: `firmware_wire_contract.md` §Reply Disambiguation):
+/// - `buf` empty / `buf[0]` unknown ⇒ [`parse_reply`] (returns `Timeout`).
+/// - `buf[0] ∈ {0,1}` ⇒ [`parse_reply`] (returns `Legacy`).
+/// - `buf[0] == RESPONSE_MARKER`:
+///     - `buf[1] == expected_cmd` ⇒ [`parse_reply`] (typed decode of the right
+///       variant — Info / CallbackName / Ack).
+///     - `buf[1] != expected_cmd` ⇒ [`crate::CommandResponse::Timeout`] (stale echo).
+///
+/// Pure (no I/O) — the unit-testable core of [`read_typed_response`].
+///
+/// Consumer: [`read_typed_response`] (P1.M1.T3.S1) → [`burst_and_read_one`] → the
+/// `run()` typed dispatch (P1.M1.T3.S2).
+#[allow(dead_code)]
+pub(crate) fn classify_response(buf: &[u8], expected_cmd: u8) -> crate::CommandResponse {
+    use crate::CommandResponse;
+    if buf.first() == Some(&RESPONSE_MARKER) {
+        let echo = buf.get(1).copied().unwrap_or(0);
+        if echo != expected_cmd {
+            // Stale or mismatched typed reply (echo ≠ command we sent). The IN
+            // buffer holds a reply from a different command; treat as non-capable
+            // for THIS command rather than mis-decoding into the wrong variant.
+            return CommandResponse::Timeout;
+        }
+    }
+    parse_reply(buf)
 }
 
 /// Match parameters a cached handle set was opened for. The cache is rebuilt
@@ -1220,6 +1377,83 @@ mod tests {
                 callback_count: 0,
                 board_rules_present: false,
             }
+        );
+    }
+
+    #[test]
+    fn classify_response_typed_matching_echo_decodes() {
+        // QUERY_INFO reply ([0x51][0x01][proto][flags][count][board]) with
+        // expected_cmd = CMD_QUERY_INFO ⇒ typed decode into Info{..}.
+        let response = [0x51, 0x01, 2, 0x03, 5, 1];
+        assert_eq!(
+            classify_response(&response, CMD_QUERY_INFO),
+            CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x03,
+                callback_count: 5,
+                board_rules_present: true,
+            }
+        );
+    }
+
+    #[test]
+    fn classify_response_typed_mismatched_echo_is_timeout() {
+        // The NEW guard: buf[0]==0x51 but buf[1] != expected_cmd ⇒ Timeout.
+        // A QUERY_CALLBACK reply (echo 0x02) must NOT decode when we sent QUERY_INFO
+        // (0x01) — it's a stale reply from a different command in the IN buffer.
+        let response = [0x51, 0x02, 3, b'V', b'i', b'm', 0x00];
+        assert_eq!(
+            classify_response(&response, CMD_QUERY_INFO),
+            CommandResponse::Timeout,
+            "a typed reply echoing cmd 0x02 must NOT decode when we expected 0x01"
+        );
+    }
+
+    #[test]
+    fn classify_response_legacy_delegates_to_parse_reply() {
+        // Legacy 0/1 replies: buf[0] != 0x51, so expected_cmd is IRRELEVANT —
+        // delegate to parse_reply. (A legacy device ignores the typed bytes and
+        // walks them as a no-match string, replying with its match-bool.)
+        assert_eq!(
+            classify_response(&[1], CMD_QUERY_INFO),
+            CommandResponse::Legacy { matched: true }
+        );
+        assert_eq!(
+            classify_response(&[0], CMD_SET_OS),
+            CommandResponse::Legacy { matched: false }
+        );
+    }
+
+    #[test]
+    fn classify_response_empty_and_unknown_marker_are_timeout() {
+        // Empty slice / unknown marker ⇒ Timeout (delegates to parse_reply's arms).
+        assert_eq!(
+            classify_response(&[], CMD_QUERY_INFO),
+            CommandResponse::Timeout
+        );
+        assert_eq!(
+            classify_response(&[0x42], CMD_QUERY_CALLBACK),
+            CommandResponse::Timeout,
+            "unknown marker ⇒ Timeout (parse_reply's `_ => Timeout` arm)"
+        );
+    }
+
+    #[test]
+    fn classify_response_ack_variants_require_matching_echo() {
+        // SET_OS (0x03) and APPLY_HOST_CONTEXT (0x05) share the [0x51][echo][ack]
+        // shape; each decodes ONLY when expected_cmd matches its echo.
+        assert_eq!(
+            classify_response(&[0x51, 0x03, 1], CMD_SET_OS),
+            CommandResponse::Ack { ok: true }
+        );
+        assert_eq!(
+            classify_response(&[0x51, 0x05, 0], CMD_APPLY_HOST_CONTEXT),
+            CommandResponse::Ack { ok: false }
+        );
+        // Cross-mismatch: a 0x05 reply expected as 0x03 ⇒ Timeout (stale guard).
+        assert_eq!(
+            classify_response(&[0x51, 0x05, 1], CMD_SET_OS),
+            CommandResponse::Timeout
         );
     }
 }

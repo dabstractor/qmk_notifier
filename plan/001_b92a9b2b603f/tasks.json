@@ -206,7 +206,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Transport Reply Capture Integration",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Evolve the existing transport layer (burst_to_one, try_send_once, send_raw_report) to capture the first device reply instead of discarding all replies, and wire run() to use build_command_data + send_raw_report + parse_reply for full typed-command dispatch. This is the integration milestone that connects the pure functions (M2) to the HID I/O layer.",
           "tasks": [
             {
@@ -267,14 +267,14 @@
               "type": "Task",
               "id": "P1.M3.T3",
               "title": "Wire run() full typed-command dispatch",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Replace the placeholder/stub logic in run() with the real dispatch: build_command_data -> send_raw_report -> parse_reply -> CommandResponse. This ties together all the work from M1 and M2.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T3.S1",
                   "title": "Implement run() dispatch using build_command_data, send_raw_report, and parse_reply",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S2",
@@ -306,14 +306,14 @@
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "Add diagnostic CLI subcommands",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add optional CLI flags for the typed-command diagnostics: --query-info and --list-callbacks. These map to RunCommand::QueryInfo and a loop of RunCommand::QueryCallback, providing convenient command-line access to the library API.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T1.S1",
                   "title": "Add --query-info and --list-callbacks flags to parse_cli_args",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T3.S1"

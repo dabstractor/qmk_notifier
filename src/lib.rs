@@ -273,33 +273,87 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
     ))
 }
 
-/// Execute the notifier logic for the given command and parameters.
+/// Build the on-wire payload for `command` — the bytes AFTER the `0x81 0x9F`
+/// magic header (which `burst_to_one` prepends per 33-byte report).
 ///
-/// Returns a [`CommandResponse`] describing the device's reply, or a
-/// [`QmkError`] on transport failure (PRD §3 *Public API*, §10 *Typed-Command
-/// Transport*). The response shape depends on the command:
+/// - `SendMessage` → the caller's window string plus the `0x03` ETX terminator
+///   (PRD §14 invariant 1; ETX is appended HERE, not by build_typed_payload,
+///   which returns an empty payload for SendMessage).
+/// - Typed commands (`QueryInfo`/`QueryCallback`/`SetOs`/`ApplyHostContext`) →
+///   delegate to `core::build_typed_payload`, which produces the
+///   `[0xF0][cmd][args][0x03]` form (PRD §4, §10.1).
+/// - `ListDevices` → empty (it never reaches a send; routed elsewhere by `run`).
+fn build_payload(command: &RunCommand, verbose: bool) -> Vec<u8> {
+    match command {
+        RunCommand::SendMessage(message) => {
+            let input = message.as_bytes();
+            let mut data = Vec::with_capacity(input.len() + 1);
+            data.extend_from_slice(input);
+            data.push(0x03); // ETX terminator (PRD §14 invariant 1)
+            if verbose {
+                println!(
+                    "Message length: {} bytes (including ETX terminator)",
+                    data.len()
+                );
+            }
+            data
+        }
+        // build_typed_payload appends the ETX (0x03) terminator internally and
+        // returns empty Vec for SendMessage/ListDevices — by construction only
+        // the typed variants reach this arm.
+        RunCommand::QueryInfo
+        | RunCommand::QueryCallback(_)
+        | RunCommand::SetOs(_)
+        | RunCommand::ApplyHostContext { .. } => core::build_typed_payload(command),
+        RunCommand::ListDevices => Vec::new(),
+    }
+}
+
+/// Execute the notifier command described by `params` and return the parsed
+/// device reply (PRD §3 *Public API*, §8 *Response Handling*, §10 *Typed-Command
+/// Transport*).
 ///
-/// - [`RunCommand::SendMessage`] → [`CommandResponse::Legacy`] as a
-///   **placeholder** (`matched: true`) until real reply parsing lands in
-///   P1.M1.T3; the firmware's `response[0]` match-bool will be decoded there.
-/// - [`RunCommand::ListDevices`] → [`CommandResponse::Timeout`]: no device
-///   reply was captured because nothing was sent over the wire (list-only path).
-/// - Typed variants (`QueryInfo`/`QueryCallback`/`SetOs`/`ApplyHostContext`)
-///   → build their ETX-terminated payload via `build_typed_payload` and send it
-///   through the SAME [`send_raw_report`] path as legacy strings (device cache,
-///   multi-report burst-write, IN-drain). The reply is currently DRAINED (not
-///   captured) by `burst_to_one`, so a [`CommandResponse::Timeout`] placeholder
-///   is returned; reply capture (P1.M1.T3.S1) will replace it with the real
-///   typed [`CommandResponse`].
+/// # Dispatch
+/// - [`RunCommand::ListDevices`] → calls [`list_hid_devices`] (prints the HID
+///   enumeration) and returns [`CommandResponse::Timeout`]: nothing is sent over
+///   the wire, so there is no reply to parse.
+/// - Every other variant ([`RunCommand::SendMessage`] and the typed commands
+///   [`RunCommand::QueryInfo`] / [`RunCommand::QueryCallback`] /
+///   [`RunCommand::SetOs`] / [`RunCommand::ApplyHostContext`]) shares one path:
+///   build the on-wire payload ([`build_payload`]) → burst-send it via
+///   [`send_raw_report`] (device cache, multi-report burst-write, bounded reply
+///   read) → parse the FIRST captured reply with [`core::parse_reply`].
+///
+/// # Reply → `CommandResponse` mapping
+/// - `Ok(Some(reply))` → `core::parse_reply(&reply)`:
+///   - `SendMessage` reply (`response[0]` ∈ `{0,1}`) ⇒ [`CommandResponse::Legacy`].
+///   - `0x51` typed reply ⇒ [`CommandResponse::Info`] / [`CommandResponse::CallbackName`]
+///     / [`CommandResponse::Ack`] (decoded by the `response[1]` cmd-echo).
+/// - `Ok(None)` (no device replied within the bounded read — legacy / offline
+///   device) ⇒ [`CommandResponse::Timeout`]; the caller treats this as a
+///   non-capable device and stays in string-only mode (PRD §8, §10.2).
+/// - `Err(QmkError::DeviceNotFound)` ⇒ no interface matched the VID/PID/usage
+///   predicate (the zero-config path matches by usage page/usage when VID/PID
+///   are `None`). `Err(QmkError::PartialSendError { .. })` /
+///   `Err(QmkError::SendReportError(..))` ⇒ transport failure (PRD §9).
 pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError> {
     match &params.command {
         RunCommand::ListDevices => {
             list_hid_devices()?;
-            // Semantic: no device reply was received — nothing was sent.
-            // Real reply capture arrives in P1.M3.T1/T3; ListDevices never sends.
+            // ListDevices never sends over the wire, so there is no device reply
+            // to parse. Timeout is the semantic match for "no reply received".
             Ok(CommandResponse::Timeout)
         }
-        RunCommand::SendMessage(message) => {
+        // Every command that sends a report shares one dispatch path: build the
+        // payload → burst-send → parse the first captured reply (or Timeout if
+        // no device replied within the bounded read). `command` binds to
+        // &RunCommand (match ergonomics on `&params.command`), so it's passable
+        // straight to build_payload / core::build_typed_payload.
+        command @ (RunCommand::SendMessage(_)
+        | RunCommand::QueryInfo
+        | RunCommand::QueryCallback(_)
+        | RunCommand::SetOs(_)
+        | RunCommand::ApplyHostContext { .. }) => {
             if params.verbose {
                 let vid = params
                     .vendor_id
@@ -316,66 +370,19 @@ pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError> {
                 );
             }
 
-            let input = message.as_bytes();
+            let data = build_payload(command, params.verbose);
 
-            let mut input_with_terminator = Vec::with_capacity(input.len() + 1);
-            input_with_terminator.extend_from_slice(input);
-            input_with_terminator.push(0x03);
-
-            if params.verbose {
-                println!(
-                    "Message length: {} bytes (including ETX terminator)",
-                    input_with_terminator.len()
-                );
+            match send_raw_report(
+                &data,
+                params.vendor_id,
+                params.product_id,
+                params.usage_page,
+                params.usage,
+                params.verbose,
+            )? {
+                Some(reply) => Ok(core::parse_reply(&reply)),
+                None => Ok(CommandResponse::Timeout),
             }
-
-            // send_raw_report STILL returns Result<(), QmkError> at this stage
-            // (its evolution to Result<Option<Vec<u8>>, QmkError> is P1.M3.T2).
-            // On success we return the placeholder Legacy{matched:true}; the
-            // real response[0] match-bool is decoded in P1.M3.T3 via parse_reply.
-            send_raw_report(
-                &input_with_terminator,
-                params.vendor_id,
-                params.product_id,
-                params.usage_page,
-                params.usage,
-                params.verbose,
-            )?;
-
-            Ok(CommandResponse::Legacy { matched: true })
-        }
-
-        // --- Typed-command dispatch (v0.3.0). Each typed variant builds its
-        // ETX-terminated payload via `build_typed_payload` (core.rs, P1.M1.T2.S1)
-        // and sends it through the SAME `send_raw_report` path as legacy strings
-        // (MatchKey device-cache lookup, multi-report burst-write, bounded
-        // IN-drain). The firmware reply is currently DRAINED and discarded by
-        // `burst_to_one`; reply CAPTURE + `parse_reply` land in P1.M1.T3.S1/S2,
-        // which will replace the `CommandResponse::Timeout` placeholder below
-        // with the real typed `CommandResponse`.
-        //
-        // Arms are collapsed into one or-pattern (not one-per-variant) because
-        // the build+send is identical across variants. Per-variant divergence
-        // arrives with reply PARSING (P1.M1.T3.S2), which will split this arm as
-        // needed (or leave it collapsed if `parse_reply` decodes generically by
-        // the `reply[1]` cmd-echo). Per-variant REQUEST docs live on the
-        // `RunCommand` enum variants themselves. ---
-        RunCommand::QueryInfo
-        | RunCommand::QueryCallback(_)
-        | RunCommand::SetOs(_)
-        | RunCommand::ApplyHostContext { .. } => {
-            let payload = core::build_typed_payload(&params.command);
-            send_raw_report(
-                &payload,
-                params.vendor_id,
-                params.product_id,
-                params.usage_page,
-                params.usage,
-                params.verbose,
-            )?;
-            // Placeholder: the typed reply is drained, not captured. Reply
-            // capture (P1.M1.T3.S1) replaces this with the real CommandResponse.
-            Ok(CommandResponse::Timeout)
         }
     }
 }
