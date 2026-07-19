@@ -10,11 +10,69 @@ use clap::{Arg, ArgAction, Command};
 mod error;
 pub use error::QmkError;
 
-/// Command types for the QMK notifier
+/// Command types for the QMK notifier.
+///
+/// `SendMessage`/`ListDevices` are the legacy path. The typed variants carry the
+/// host-side-rules typed-command protocol (PRD §3, §10; framing in §10.1;
+/// canonical wire layout in `firmware_wire_contract.md` §Command Table).
 #[derive(Debug, Clone)]
 pub enum RunCommand {
+    /// Legacy path: send the `"{class}\x1D{title}"` window string (this crate
+    /// appends the `0x03` ETX terminator before framing). Not a typed command.
     SendMessage(String),
+    /// List all HID devices visible to hidapi (no keyboard I/O).
     ListDevices,
+
+    /// Typed command `0x01` — `QUERY_INFO`. No request args. Replies with
+    /// `[0x51][0x01][proto_ver][feature_flags][callback_count][board_rules_present]`.
+    /// See PRD §10.1 (Framing) and `firmware_wire_contract.md` §Command Table.
+    QueryInfo,
+    /// Typed command `0x02` — `QUERY_CALLBACK`. `index` is the firmware callback
+    /// registry slot to read. Replies with `[0x51][0x02][index][name, NUL-padded]`.
+    /// See PRD §10.1 and `firmware_wire_contract.md` §Command Table.
+    QueryCallback(u8),
+    /// Typed command `0x03` — `SET_OS`. Declares the host OS to the keyboard at
+    /// connect time. Serialized as `[0xF0][0x03][os_byte][0x03]` where
+    /// `os_byte = HostOs::X as u8` (build_command_data, P1.M2.T1).
+    /// See PRD §10.1 and `firmware_wire_contract.md` §SET_OS request.
+    SetOs(HostOs),
+    /// Typed command `0x05` — `APPLY_HOST_CONTEXT`. Pushes the host's desired
+    /// layer + enabled-callback set + clear-board flag to the firmware in one
+    /// atomic command. Serialized as
+    /// `[0xF0][0x05][layer][flags][count][id0][id1]…[0x03]` (build_command_data,
+    /// P1.M2.T1).
+    ///
+    /// - `layer: Option<u8>` — `None` ⇒ wire byte `0xFF` (clear host layer);
+    ///   `Some(n)` ⇒ host-layer number (`>= 224` by convention, `HOST_LAYER_BASE`).
+    /// - `callbacks: Vec<u8>` — the FULL desired enabled callback-id set; the
+    ///   firmware diffs this against the current set (disable-before-enable).
+    ///   Uncapped; may span multiple reports.
+    /// - `clear_board: bool` — `true` ⇒ set firmware `flags` bit 0
+    ///   (`clear_board`): firmware clears the board layer/command before applying.
+    ///
+    /// See PRD §10.1 and `firmware_wire_contract.md` §APPLY_HOST_CONTEXT request.
+    ApplyHostContext {
+        layer: Option<u8>,
+        callbacks: Vec<u8>,
+        clear_board: bool,
+    },
+}
+
+/// Host operating system, mirrors QMK's `os_variant_t`.
+/// Sent via SET_OS (cmd 0x03) to declare the host OS at connect.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostOs {
+    /// `0` — OS not yet detected / unknown. Mirrors QMK `OS_UNSURE`.
+    Unsure = 0,
+    /// `1` — Linux host. Mirrors QMK `OS_LINUX`.
+    Linux = 1,
+    /// `2` — Windows host. Mirrors QMK `OS_WINDOWS`.
+    Windows = 2,
+    /// `3` — macOS host. Mirrors QMK `OS_MACOS`.
+    Macos = 3,
+    /// `4` — iOS host. Mirrors QMK `OS_IOS`.
+    Ios = 4,
 }
 
 /// Parameters required for running QMK notifier operations
@@ -218,11 +276,101 @@ pub fn run(params: RunParameters) -> Result<(), QmkError> {
                 params.verbose,
             )
         }
+
+        // --- Typed-command stubs. Dispatch + reply handling land in P1.M3.T3.S1;
+        // run()'s return type changes to `Result<CommandResponse, QmkError>` in
+        // P1.M1.T2.S2. `todo!()` keeps this match exhaustive so the crate
+        // compiles today. Existing tests only construct ListDevices/SendMessage
+        // and never reach these arms. Do NOT wire real logic here. ---
+        RunCommand::QueryInfo => todo!("typed dispatch lands in P1.M3.T3.S1"),
+        RunCommand::QueryCallback(_) => todo!("typed dispatch lands in P1.M3.T3.S1"),
+        RunCommand::SetOs(_) => todo!("typed dispatch lands in P1.M3.T3.S1"),
+        RunCommand::ApplyHostContext { .. } => {
+            todo!("typed dispatch lands in P1.M3.T3.S1")
+        }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_host_os_discriminants_match_firmware_contract() {
+        // Mirrors QMK os_variant_t and the SET_OS `os_byte` table in
+        // plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md.
+        assert_eq!(HostOs::Unsure as u8, 0);
+        assert_eq!(HostOs::Linux as u8, 1);
+        assert_eq!(HostOs::Windows as u8, 2);
+        assert_eq!(HostOs::Macos as u8, 3);
+        assert_eq!(HostOs::Ios as u8, 4);
+    }
+
+    #[test]
+    fn test_run_command_query_variants_construction() {
+        // QueryInfo: unit variant — construct + match.
+        let q = RunCommand::QueryInfo;
+        assert!(matches!(q, RunCommand::QueryInfo));
+
+        // QueryCallback(index): the u8 is the firmware callback-registry slot.
+        let c = RunCommand::QueryCallback(5);
+        match c {
+            RunCommand::QueryCallback(index) => assert_eq!(index, 5),
+            _ => panic!("expected QueryCallback"),
+        }
+    }
+
+    #[test]
+    fn test_run_command_set_os_variant_construction() {
+        // SetOs(HostOs): HostOs carries the os_byte source (verified separately by
+        // test_host_os_discriminants_match_firmware_contract). Here we confirm the
+        // payload round-trips through the variant.
+        let s = RunCommand::SetOs(HostOs::Windows);
+        match s {
+            RunCommand::SetOs(os) => assert_eq!(os, HostOs::Windows),
+            _ => panic!("expected SetOs"),
+        }
+    }
+
+    #[test]
+    fn test_run_command_apply_host_context_construction() {
+        // layer == None ⇒ clear-host-layer path (wire byte 0xFF).
+        let clear = RunCommand::ApplyHostContext {
+            layer: None,
+            callbacks: vec![1, 2, 3],
+            clear_board: true,
+        };
+        match clear {
+            RunCommand::ApplyHostContext {
+                layer,
+                callbacks,
+                clear_board,
+            } => {
+                assert_eq!(layer, None, "None must mean clear-host-layer (0xFF)");
+                assert_eq!(callbacks, vec![1, 2, 3]);
+                assert!(clear_board, "clear_board flag must round-trip");
+            }
+            _ => panic!("expected ApplyHostContext"),
+        }
+
+        // layer == Some(n) ⇒ host-layer number (>= 224 by convention).
+        let set = RunCommand::ApplyHostContext {
+            layer: Some(224), // HOST_LAYER_BASE
+            callbacks: Vec::new(),
+            clear_board: false,
+        };
+        match set {
+            RunCommand::ApplyHostContext {
+                layer,
+                callbacks,
+                clear_board,
+            } => {
+                assert_eq!(layer, Some(224));
+                assert!(callbacks.is_empty());
+                assert!(!clear_board);
+            }
+            _ => panic!("expected ApplyHostContext"),
+        }
+    }
 
     #[test]
     fn test_run_parameters_creation() {
