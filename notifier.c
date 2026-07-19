@@ -110,6 +110,13 @@ __attribute__((weak)) size_t get_layer_map_size(void) {
     return 0;
 }
 
+// Weak-default host-callback registry accessors (§14). Overridden by
+// DEFINE_HOST_CALLBACKS in the keymap. {NULL,0} ⇒ no registry ⇒ feature_flags
+// bit 0x02 (NOTIFY_FEATURE_CALLBACK_REGISTRY) clear and callback_count = 0, so a
+// keymap that omits DEFINE_HOST_CALLBACKS links and behaves identically to today.
+__attribute__((weak)) host_callback_t* get_host_callbacks(void) { return NULL; }
+__attribute__((weak)) size_t           get_host_callbacks_size(void) { return 0; }
+
 #define LAYER_UNSET 255
 uint8_t activated_layer = LAYER_UNSET;
 // reference to currently active command:
@@ -120,6 +127,16 @@ command_map_t *current_command = {0};
  * dependency on the OS-detection subsystem). OS_UNSURE ⇒ default maps only
  * (invariant 17, §2 F8.2/F8.6). */
 os_variant_t current_os = OS_UNSURE;
+
+/* --- HOST STATE (a plane separate from board state; architecture invariant 21) --
+ * Board state above (activated_layer / current_command / current_os) is driven by
+ * the legacy string path (process_full_message). The host state below is driven by
+ * typed commands (handle_typed_command, §14/§4.6) and is intentionally orthogonal:
+ * process_full_message never touches it; handle_typed_command touches board state
+ * only via clear_board (§14). */
+static uint8_t host_layer = LAYER_UNSET;                       /* independent of board activated_layer (§14) */
+static bool    host_cb_enabled[HOST_CALLBACK_MAX] = {false};   /* zero-init; diff target for apply_host_callbacks (§14) */
+static bool    has_been_queried = false;                       /* set on first QUERY_INFO service (§4.6 handshake-timing rule) */
 
 /* --- Per-OS weak accessors + selector (multi-OS overlay, §2 F8 / §8.3) --------
  * Each accessor returns {NULL, 0} ("no OS-specific map") UNLESS overridden by a
@@ -171,6 +188,25 @@ static void select_layer_map_os(os_variant_t os, layer_map_t **map, size_t *size
         case OS_IOS:     *map = _notifier_get_layer_map_OS_IOS();     *size = _notifier_get_layer_map_OS_IOS_size();     return;
         default:         *map = NULL; *size = 0; return;
     }
+}
+
+/* board_rules_present (§4.6 QUERY_INFO.board_rules_present) — true iff ANY board
+ * map is non-empty. Checks the default command/layer maps AND every per-OS map.
+ * The host only needs a single bit ("does this keymap use the notifier matcher at
+ * all?"); per-OS granularity is deliberately NOT exposed (§4.6: "a single bit
+ * suffices"). (findings_and_risks.md F8: must check ALL maps.) */
+static bool board_rules_present(void) {
+    if (get_command_map_size() > 0) return true;
+    if (get_layer_map_size() > 0)   return true;
+    if (_notifier_get_command_map_OS_LINUX_size() > 0)   return true;
+    if (_notifier_get_layer_map_OS_LINUX_size() > 0)     return true;
+    if (_notifier_get_command_map_OS_WINDOWS_size() > 0) return true;
+    if (_notifier_get_layer_map_OS_WINDOWS_size() > 0)   return true;
+    if (_notifier_get_command_map_OS_MACOS_size() > 0)   return true;
+    if (_notifier_get_layer_map_OS_MACOS_size() > 0)     return true;
+    if (_notifier_get_command_map_OS_IOS_size() > 0)     return true;
+    if (_notifier_get_layer_map_OS_IOS_size() > 0)       return true;
+    return false;
 }
 
 void activate_layer(uint8_t layer) {
