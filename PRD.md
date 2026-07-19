@@ -168,10 +168,9 @@ supporting the constructs in §7 and §15. Must be **non-crashing on any input**
   command (toggle vim) and a layer (switch keymap) simultaneously.
 
 ### F6 — Acknowledgement
-- F6.1 After processing, always call `raw_hid_send(response, 32)` with
-  `response[0] = 1` if any command or layer matched, else `0`. (QMK silently
-  drops this today due to a separate `length == RAW_EPSIZE` guard in the host's
-  receive path — see §4.4 — but the firmware must still send it.)
+- F6.1 After processing, always call `raw_hid_send(response, RAW_REPORT_SIZE)`
+  with `response[0] = 1` if any command or layer matched, else `0`. The host
+  receives this 32-byte reply (see §4.4); it is not dropped.
 
 ### F7 — Weak-symbol defaults
 - F7.1 If the keymap defines neither `DEFINE_SERIAL_COMMANDS` nor
@@ -345,13 +344,23 @@ data[1]  = 0x9F      ← qmk-notifier magic byte 2
 data[2..]= <payload bytes for this report>
 ```
 
-### 4.4 The acknowledgement (sent but currently dropped)
+### 4.4 The acknowledgement
 
 After each report the firmware sends a 32-byte response with `response[0] =
-(matched ? 1 : 0)`. **QMK's host-side `raw_hid_send` consumer currently requires
-`length == RAW_EPSIZE` and silently drops this ack** — so the desktop does not
-rely on it. The firmware MUST still send it (a future fix to the host guard will
-make it meaningful). See `notifier.c` §8.
+(matched ? 1 : 0)` via `raw_hid_send(response, RAW_REPORT_SIZE)`. The host
+**receives** it: the reply is a full 32-byte logical report, which satisfies the
+`length == 32` guard on every QMK USB protocol (ChibiOS/LUFA endpoint = 32; V-USB
+reassembles 32 internally). The firmware MUST always send it. See `notifier.c` §8.
+
+> **Historical note (resolved).** An earlier build reused the header-stripped
+> `length` — i.e. `30`, after `data += 2; length -= 2;` — in the `raw_hid_send`
+> call, producing a 30-byte reply that the `length == 32` guard rejected, so the
+> host timed out and layer/callback reaction lagged. Fixed in commit `01a51935`
+> ("fixed raw hid response size"), which sends the constant `RAW_REPORT_SIZE`
+> (32). The "ack is silently dropped by QMK because `length == RAW_EPSIZE`"
+> wording that appeared in older revisions of this spec, the desktop
+> `PROTOCOL.md`, and the `qmk_notifier` crate comments is stale carryover from
+> that pre-fix state and has been corrected in all three.
 
 ### 4.5 Why the magic header exists
 
