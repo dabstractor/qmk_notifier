@@ -20,6 +20,7 @@ gcc -o test_comprehensive_integration test_comprehensive_integration.c pattern_m
 gcc -o test_error_handling test_error_handling.c pattern_match.c -I.
 gcc -o test_memory_stress test_memory_stress.c pattern_match.c -I.
 gcc -o test_invalid_patterns test_invalid_patterns.c pattern_match.c -I.
+gcc -o test_fidelity_nfa128 test_fidelity_nfa128.c pattern_match.c -I. -DNFA_MAX_PATTERN=128 -std=c99
 
 echo "Compilation complete."
 echo
@@ -86,6 +87,7 @@ run_test "Comprehensive Integration Tests" "test_comprehensive_integration"
 run_test "Error Handling Tests" "test_error_handling"
 run_test "Memory Stress Tests" "test_memory_stress"
 run_test "Invalid Patterns Tests" "test_invalid_patterns"
+run_test "NFA-128 Fidelity Gate" "test_fidelity_nfa128"
 
 # (Escape-processing and get_escaped_char plumbing are covered by test_metachar_verification;
 #  their standalone binaries had no source and have been removed.)

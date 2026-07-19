@@ -104,14 +104,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Add firmware-budget NFA matcher fidelity test (Issue 3)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create a new test suite test_fidelity_nfa128.c compiled with -DNFA_MAX_PATTERN=128 and register it in run_all_tests.sh so the matcher is exercised at the firmware production budget. This closes the fidelity gap where the 9 existing pattern suites run at NFA_MAX_PATTERN=2048 (host/test default) while firmware uses 128.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Create test_fidelity_nfa128.c and register in run_all_tests.sh",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_16d737de7a3e/bugfix/001_9bb28e448bd3/architecture/test_infrastructure.md for the exact insertion points and compile/run patterns. The 9 existing pattern suites in run_all_tests.sh (lines 11-19) compile pattern_match.c directly, so NFA_MAX_PATTERN defaults to 2048 (the #ifndef guard at pattern_match.c:286-291). Only notifier.c #defines it to 128 (notifier.c:14). The new suite must compile with -DNFA_MAX_PATTERN=128 to override the default. The result-grep contract for run_all_tests.sh requires main() to print 'Total tests run:' / 'Tests passed:' / 'Tests failed:'. Do NOT add -DNFA_MAX_PATTERN=128 to the existing 9 suites (test_memory_stress intentionally needs 2048).\n2. INPUT: pattern_match.c (628 lines) with NFA_MAX_PATTERN guard at line 286, pattern_match.h (API: pattern_match(), free_parsed_pattern()). The compile-time guard at notifier.c:28-30: `typedef char nfa_budget_check[(NFA_MAX_PATTERN <= 128) ? 1 : -1];` — this only checks the BUDGET, not per-pattern fit. The NEW() macro at pattern_match.c:~365 clamps state allocation to NFA_MAX_STATES (reuses last slot on overflow), so a pattern exceeding the budget silently degrades instead of erroring.\n3. LOGIC: Implement per PRD §7.9/§11.1/§11.3 and Issue 3 (h3.2). (A) Create test_fidelity_nfa128.c following the test_pattern_match.c structure: file-scope counters (tests_run, tests_passed, tests_failed), a run_test() helper or simple inline assertions, and a main() that prints 'Total tests run:' / 'Tests passed:' / 'Tests failed:'. Key test cases: (i) A pattern with processed-pattern length at exactly 128 bytes — verify it matches correctly. (ii) A pattern with processed-pattern length at 129+ bytes — verify it is clamped by the NFA state pool (NEW() reuses last slot) and does NOT match incorrectly (or returns a safe no-match). The simplest way to create a long processed pattern is a long literal string or repeated character class. (iii) A normal short pattern (e.g. 'hello') — verify it still matches at the 128 budget (smoke test). (B) Add to run_all_tests.sh compile block (after line 19): `gcc -o test_fidelity_nfa128 test_fidelity_nfa128.c pattern_match.c -I. -DNFA_MAX_PATTERN=128 -std=c99`. (C) Add to run_all_tests.sh run sequence (after line ~104): `run_test 'NFA-128 Fidelity Gate' 'test_fidelity_nfa128'`. Mock: none needed — pattern_match.c is self-contained.\n4. OUTPUT: New file test_fidelity_nfa128.c and modified run_all_tests.sh. The new suite must compile cleanly with -Wall and pass all its assertions. The existing 9 suites must remain unaffected (2023/2023). The aggregate total in run_all_tests.sh increases by the new test count.\n5. DOCS: [Mode A] No docs update needed for this subtask — the test is internal infrastructure with no user-facing surface. The README test results section (updated by P1.M2.T1.S1 and P1.M2.T4.S1) will reflect the new suite count.",
@@ -128,14 +128,14 @@
               "type": "Task",
               "id": "P1.M2.T3",
               "title": "Resolve has_been_queried dead state (Issue 4)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Document the has_been_queried variable as intentionally write-only. It is set to true on the first QUERY_INFO (notifier.c:706) per PRD §4.6 requirement, but never read. The PRD only requires the firmware to SET it (the host enforces 'at most once per board boot'). Rather than changing the wire protocol to expose it (risky for host compatibility), document it as reserved for future host observability.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T3.S1",
                   "title": "Document has_been_queried as intentionally write-only in notifier.c",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_16d737de7a3e/bugfix/001_9bb28e448bd3/architecture/findings_and_risks.md. The variable has_been_queried is declared at notifier.c:186 (`static bool has_been_queried = false;`) and set to true at notifier.c:706 (QUERY_INFO handler). It is NEVER read by any code path. The PRD §4.6 requires the firmware to set it; the host enforces 'at most once per board boot'. Exposing it via QUERY_INFO would change the 4-byte response payload to 5 bytes, risking host compatibility — NOT recommended for a Minor issue. The existing comments already mention the §4.6 handshake-timing rule.\n2. INPUT: notifier.c line 186 (declaration) and line 706 (assignment). The existing comments reference §4.6.\n3. LOGIC: Implement per Issue 4 (h3.3). Update the declaration comment at line 186 to clearly state: 'Write-only by design (PRD §4.6): the host enforces at-most-once-per-boot semantics; this flag is reserved for future firmware-side observability/debugging and is intentionally not exposed in the QUERY_INFO response to preserve wire-protocol compatibility.' Update the assignment comment at line 706 similarly if needed. No functional code change — this is documentation-only.\n4. OUTPUT: notifier.c where has_been_queried has a clear, accurate comment explaining its write-only design rationale. No behavior change. All tests still pass.\n5. DOCS: This IS the documentation fix — the comment in notifier.c IS the doc. No separate docs subtask needed.",
