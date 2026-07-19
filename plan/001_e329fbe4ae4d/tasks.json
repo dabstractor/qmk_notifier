@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Pattern Matching Engine (pattern_match.{c,h})",
-      "status": "Ready",
+      "status": "Complete",
       "description": "Build the Thompson-NFA regex engine and its complete host-side test suite. This is the foundational, independently-testable component. It must compile both as a standalone translation unit (host tests) and when #included by notifier.c (QMK build). All 1826 test assertions must pass.",
       "milestones": [
         {
@@ -182,7 +182,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Character Classification & Anchor Strategy",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Implement the character classification helpers, the single-char predicate, and the anchor-strategy selection logic that ties the NFA to the public API.",
           "tasks": [
             {
@@ -259,7 +259,7 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Host-Side Test Suite (9 programs + test runner)",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Implement the 9 host-side test programs and the test runner. All tests link only pattern_match.c (not notifier.c). Each suite uses the test_case_t / run_test pattern from PRD §11.4. Total: ~1826 assertions, all must pass.",
           "tasks": [
             {
