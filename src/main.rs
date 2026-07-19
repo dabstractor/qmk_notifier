@@ -9,8 +9,17 @@ fn main() {
     #[cfg(unix)]
     reset_sigpipe_to_default();
 
-    let cli = match parse_cli_args() {
-        Ok(cli) => cli,
+    // --list-callbacks is a CLI-only sweep signal. The library no longer returns
+    // it from parse_cli_args (PRD §3: parse_cli_args -> RunParameters, which has
+    // no sweep flag — Issue 2). Detect it out-of-band from raw argv so main.rs
+    // can run the multi-call callback sweep after `run` returns
+    // `CommandResponse::Info`. Placed BEFORE parse_cli_args so the flag is
+    // captured even if clap exits on --help/--version/an error (harmless: the
+    // process exits either way).
+    let list_callbacks = std::env::args().any(|a| a == "--list-callbacks");
+
+    let params = match parse_cli_args() {
+        Ok(params) => params,
         Err(e) => {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -18,19 +27,18 @@ fn main() {
     };
 
     // Copy out the device-targeting scalars (all Copy) BEFORE run() moves
-    // cli.params by value — they're needed to rebuild per-callback params.
+    // `params` by value — they're needed to rebuild per-callback params.
     // `is_list` records whether the action is `--list` (ListDevices) so that
     // after `run` we can suppress the library's `Timeout` sentinel for it
     // without re-borrowing the moved `params`.
-    let is_list = cli.params.command == RunCommand::ListDevices;
-    let vendor_id = cli.params.vendor_id;
-    let product_id = cli.params.product_id;
-    let usage_page = cli.params.usage_page;
-    let usage = cli.params.usage;
-    let verbose = cli.params.verbose;
-    let list_callbacks = cli.list_callbacks;
+    let is_list = params.command == RunCommand::ListDevices;
+    let vendor_id = params.vendor_id;
+    let product_id = params.product_id;
+    let usage_page = params.usage_page;
+    let usage = params.usage;
+    let verbose = params.verbose;
 
-    match run(cli.params) {
+    match run(params) {
         // --list-callbacks: after QueryInfo succeeds, sweep the callback registry.
         Ok(CommandResponse::Info { callback_count, .. }) if list_callbacks => {
             println!("callbacks ({callback_count}):");

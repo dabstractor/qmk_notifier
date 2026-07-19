@@ -173,7 +173,7 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Restore parse_cli_args Documented Signature (Issue 2)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Change parse_cli_args() to return Result<RunParameters, QmkError> as documented in PRD §3 (line 154), instead of the current Result<CliArgs, QmkError>. Move the --list-callbacks sweep signal out-of-band: main.rs detects the flag via std::env::args before calling parse_cli_args. Remove the CliArgs struct from the public API.",
               "subtasks": [
                 {
@@ -194,7 +194,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "Update main.rs for new signature and env::args flag detection",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -210,7 +210,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S3",
                   "title": "Update existing parse_matches / CLI tests for new return type",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
