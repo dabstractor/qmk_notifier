@@ -686,8 +686,19 @@ static bool handle_typed_command(char *data) {
             }
             break;
         }
-        /* Default / unknown cmd_id (incl 0x04 reserved for VIA-coexist, and 0x03/0x05
-         * until P1.M2.T2.S2/S3 land): reply with just [0x51][cmd_id] (no payload) so
+        /* SET_OS (0x03) — host-authoritative OS while connected (§4.7). Routes through
+         * apply_os_change — the SAME seam as notifier_set_os, so the F9 clear-on-change
+         * is NOT duplicated here. os_byte mirrors os_variant_t (0=UNSURE, 1=LINUX,
+         * 2=WINDOWS, 3=MACOS, 4=IOS). Response: [0x51][0x03][ack=1]. */
+        case NOTIFY_CMD_SET_OS: {
+            uint8_t os_byte = (uint8_t)data[2];
+            apply_os_change((os_variant_t)os_byte);
+            uint8_t payload[1] = { 0x01 };   /* ack = 1 (applied) */
+            send_typed_response(NOTIFY_CMD_SET_OS, payload, 1);
+            break;
+        }
+        /* Default / unknown cmd_id (incl 0x04 reserved for VIA-coexist, and 0x05
+         * until P1.M2.T2.S3 lands): reply with just [0x51][cmd_id] (no payload) so
          * the host always gets a typed response and never crashes on an unknown command. */
         default: {
             send_typed_response(cmd_id, NULL, 0);
