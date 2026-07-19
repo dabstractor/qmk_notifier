@@ -173,7 +173,7 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Restore parse_cli_args Documented Signature (Issue 2)",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Change parse_cli_args() to return Result<RunParameters, QmkError> as documented in PRD §3 (line 154), instead of the current Result<CliArgs, QmkError>. Move the --list-callbacks sweep signal out-of-band: main.rs detects the flag via std::env::args before calling parse_cli_args. Remove the CliArgs struct from the public API.",
               "subtasks": [
                 {
@@ -210,7 +210,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S3",
                   "title": "Update existing parse_matches / CLI tests for new return type",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -229,14 +229,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Remove Undocumented -c Short Flag (Issue 5)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Drop the .short('c') attribute from the --create-config clap arg registration in build_cli_command. The -c short flag is not documented in PRD §11 or the README CLI table. The long form --create-config remains as a backward-compat trap that returns RemovedFeature.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Drop .short('c') from create-config arg registration",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The --create-config arg is registered at lib.rs:232-239 with .short('c').long(\"create-config\").help(\"Create example configuration file (REMOVED)\").action(ArgAction::SetTrue). The select_command function (lib.rs:278) checks matches.get_flag(\"create-config\") and returns QmkError::RemovedFeature. The README CLI table (README.md:71-86) does NOT list -c or --create-config. No test asserts the -c short flag specifically (tests use the long form --create-config via the action-group exclusivity tests).\n2. INPUT: No dependencies.\n3. LOGIC: In build_cli_command (lib.rs:232-239), remove the .short('c') line from the Arg::new(\"create-config\") chain. Keep .long(\"create-config\"), .help(...), and .action(ArgAction::SetTrue). Verify select_command's get_flag(\"create-config\") still works (it uses the long name string, unaffected by removing the short). Run cargo test — verify no test breaks (none test -c specifically). Run cargo build and check --help output no longer shows -c.\n4. OUTPUT: The -c short flag is gone from --help and from the CLI. --create-config still works (returns RemovedFeature).\n5. DOCS: none — the README CLI table already omits -c, and PRD §11 does not document it. No doc files to update.",
