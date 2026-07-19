@@ -15,7 +15,7 @@ pub use error::QmkError;
 /// `SendMessage`/`ListDevices` are the legacy path. The typed variants carry the
 /// host-side-rules typed-command protocol (PRD §3, §10; framing in §10.1;
 /// canonical wire layout in `firmware_wire_contract.md` §Command Table).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunCommand {
     /// Legacy path: send the `"{class}\x1D{title}"` window string (this crate
     /// appends the `0x03` ETX terminator before framing). Not a typed command.
@@ -175,8 +175,8 @@ pub struct CliArgs {
 /// call is made by the caller (so tests can use the no-exit `try_*` form).
 fn build_cli_command() -> Command {
     Command::new("QMK Keyboard Communication Tool")
-        .version("1.0.0")
-        .author("Your Name")
+        .version(env!("CARGO_PKG_VERSION"))
+        .author(env!("CARGO_PKG_AUTHORS"))
         .about("Sends raw HID reports to QMK keyboards; --query-info / --list-callbacks diagnose typed-capable boards")
         .arg(
             Arg::new("message")
@@ -254,7 +254,7 @@ fn build_cli_command() -> Command {
         // arm (and no-args at all still triggers arg_required_else_help above).
         .group(
             ArgGroup::new("action")
-                .args(["message", "list", "query-info", "list-callbacks"])
+                .args(["message", "list", "create-config", "query-info", "list-callbacks"])
                 .multiple(false)
                 .required(false),
         )
@@ -269,6 +269,11 @@ fn build_cli_command() -> Command {
 /// `--query-info` > `--list-callbacks` > `message` positional. `--list-callbacks`
 /// maps to `RunCommand::QueryInfo` with `list_callbacks = true` — the actual
 /// callback sweep is a multi-call flow handled by `main.rs`, not a single command.
+///
+/// `--create-config` is part of the `action` ArgGroup, so combining it with any
+/// other action is rejected by clap as a conflict (exit 2) — consistent with the
+/// rest of the group. Supplied alone it still surfaces the `RemovedFeature`
+/// diagnostic.
 fn select_command(matches: &ArgMatches) -> Result<(RunCommand, bool), QmkError> {
     if matches.get_flag("create-config") {
         return Err(QmkError::RemovedFeature(
@@ -297,13 +302,16 @@ fn select_command(matches: &ArgMatches) -> Result<(RunCommand, bool), QmkError> 
 /// `&ArgMatches`, returns `Result<CliArgs, QmkError>` — never exits the process.
 /// This is the testable core of [`parse_cli_args`].
 fn parse_matches(matches: &ArgMatches) -> Result<CliArgs, QmkError> {
-    let (command, list_callbacks) = select_command(matches)?;
-
-    // Parse parameters with defaults.
+    // Parse parameters with defaults BEFORE resolving the action.
     //
     // VID/PID default to `None` (auto: match any device by usage page/usage).
     // When the flag is present, parse it into `Some(value)`. Usage page/usage
     // remain required and default to the QMK raw-HID convention.
+    //
+    // Validating the ID values first avoids a misleading ordering: a user who
+    // passes e.g. `--vendor-id 0xGGGG` with no action would otherwise be told
+    // they are "missing a parameter" and only discover the bad hex after adding
+    // an action. Surfacing the parse error first is clearer UX.
     let vendor_id = matches
         .get_one::<String>("vendor-id")
         .map(|s| parse_hex_or_decimal(s))
@@ -325,6 +333,8 @@ fn parse_matches(matches: &ArgMatches) -> Result<CliArgs, QmkError> {
         .map(|s| parse_hex_or_decimal(s))
         .transpose()?
         .unwrap_or(DEFAULT_USAGE);
+
+    let (command, list_callbacks) = select_command(matches)?;
 
     let verbose = matches.get_flag("verbose");
 
@@ -348,7 +358,7 @@ fn parse_matches(matches: &ArgMatches) -> Result<CliArgs, QmkError> {
 ///   prints each name. This multi-call flow is a CLI convenience (PRD §11) and is
 ///   NOT part of the library's single-command [`run`] API.
 ///
-/// The four action selectors (`message`, `--list`, `--query-info`,
+/// The action selectors (`message`, `--list`, `--create-config`, `--query-info`,
 /// `--list-callbacks`) are mutually exclusive (clap `ArgGroup`). `--help`,
 /// `--version`, unknown flags, and action conflicts are handled by clap's own
 /// print-and-exit UX; post-parse logic errors surface as [`QmkError`]
@@ -370,12 +380,10 @@ pub fn parse_cli_args() -> Result<CliArgs, QmkError> {
 fn build_payload(command: &RunCommand, verbose: bool) -> Vec<u8> {
     let data = core::build_command_data(command);
     if verbose {
-        if let RunCommand::SendMessage(_) = command {
-            println!(
-                "Message length: {} bytes (including ETX terminator)",
-                data.len()
-            );
-        }
+        println!(
+            "Message length: {} bytes (including ETX terminator)",
+            data.len()
+        );
     }
     data
 }
@@ -391,9 +399,9 @@ fn build_payload(command: &RunCommand, verbose: bool) -> Vec<u8> {
 /// - Every other variant ([`RunCommand::SendMessage`] and the typed commands
 ///   [`RunCommand::QueryInfo`] / [`RunCommand::QueryCallback`] /
 ///   [`RunCommand::SetOs`] / [`RunCommand::ApplyHostContext`]) shares one path:
-///   build the on-wire payload ([`build_payload`]) → burst-send it via
+///   build the on-wire payload (`build_payload`) → burst-send it via
 ///   [`send_raw_report`] (device cache, multi-report burst-write, bounded reply
-///   read) → parse the FIRST captured reply with [`core::parse_reply`].
+///   read) → parse the FIRST captured reply with `core::parse_reply`.
 ///
 /// # Reply → `CommandResponse` mapping
 /// - `Ok(Some(reply))` → `core::parse_reply(&reply)`:
@@ -638,11 +646,14 @@ mod tests {
 
     #[test]
     fn test_run_with_send_message_command() {
-        // Explicit VID/PID still works (disambiguation).
+        // Explicit VID/PID still works (disambiguation). Use a bogus VID/PID
+        // (matching the dispatch-proof tests below) so this test stays hermetic
+        // and never side-effects on a real `0xFEED:0x0000` keyboard that may be
+        // plugged into a developer's machine during `cargo test`.
         let params = RunParameters::new(
             RunCommand::SendMessage("test message".to_string()),
-            Some(0xFEED),
-            Some(0x0000),
+            Some(0xDEAD),
+            Some(0xBEEF),
             0xFF60,
             0x61,
             false,
@@ -673,8 +684,8 @@ mod tests {
     fn test_run_with_verbose_output() {
         let params = RunParameters::new(
             RunCommand::SendMessage("verbose test".to_string()),
-            Some(0x1234),
-            Some(0x5678),
+            Some(0xDEAD),
+            Some(0xBEEF),
             0xABCD,
             0xEF01,
             true, // verbose = true

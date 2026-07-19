@@ -119,12 +119,12 @@ const SEND_RETRIES: usize = 1;
 ///
 /// # Return
 /// - `Ok(Some(bytes))` — every matched device accepted the burst AND at least the
-///   first device replied within [`REPLY_READ_TIMEOUT_MS`] (the bounded read in
-///   [`burst_to_one`]). `bytes` is that first reply's raw IN report (up to
-///   [`REPORT_LENGTH`] + 1 bytes). Decode it downstream via `parse_reply`
+///   first device replied within `REPLY_READ_TIMEOUT_MS` (the bounded read in
+///   `burst_to_one`). `bytes` is that first reply's raw IN report (up to
+///   `REPORT_LENGTH` + 1 bytes). Decode it downstream via `parse_reply`
 ///   into a [`crate::CommandResponse`] (PRD §8, §10.2).
 /// - `Ok(None)` — the burst succeeded but NO device replied within
-///   [`REPLY_READ_TIMEOUT_MS`] (timeout / read failure / a legacy device that
+///   `REPLY_READ_TIMEOUT_MS` (timeout / read failure / a legacy device that
 ///   sends no typed reply). The caller treats `None` as a non-capable device and
 ///   stays in string-only mode (PRD §10.2, §8).
 /// - `Err(QmkError::DeviceNotFound)` — no interface matched the predicate.
@@ -135,11 +135,11 @@ const SEND_RETRIES: usize = 1;
 ///   retries.
 ///
 /// `data` carries ONLY the payload after the `0x81 0x9F` magic header:
-/// [`burst_to_one`] prepends that header (and the leading report-ID byte) per
+/// `burst_to_one` prepends that header (and the leading report-ID byte) per
 /// 33-byte report. For legacy strings the caller appends the `0x03` ETX terminator
-/// first; for typed commands `build_command_data` produces the `[0xF0][cmd][args]`
-/// [0x03]` payload (PRD §4, §10.1). Multi-report burst-write and the device cache
-/// are shared by all command types.
+/// first; for typed commands `build_command_data` produces the
+/// `[0xF0][cmd][args][0x03]` payload (PRD §4, §10.1). Multi-report burst-write
+/// and the device cache are shared by all command types.
 pub fn send_raw_report(
     data: &[u8],
     vendor_id: Option<u16>,
