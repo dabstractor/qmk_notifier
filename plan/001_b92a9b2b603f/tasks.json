@@ -306,14 +306,14 @@
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "Add diagnostic CLI subcommands",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add optional CLI flags for the typed-command diagnostics: --query-info and --list-callbacks. These map to RunCommand::QueryInfo and a loop of RunCommand::QueryCallback, providing convenient command-line access to the library API.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T1.S1",
                   "title": "Add --query-info and --list-callbacks flags to parse_cli_args",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T3.S1"
@@ -331,14 +331,14 @@
               "type": "Task",
               "id": "P1.M4.T2",
               "title": "Dependency cleanup and version bump",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Remove unused dependencies (toml, serde, dirs) from Cargo.toml and bump the crate version from 0.2.1 to 0.3.0.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T2.S1",
                   "title": "Remove unused deps and bump version to 0.3.0",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M3.T3.S1"

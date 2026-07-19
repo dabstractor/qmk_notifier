@@ -4,7 +4,7 @@ pub use core::{
     DEFAULT_USAGE_PAGE, DEFAULT_VENDOR_ID, REPORT_LENGTH,
 };
 
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
 
 // Export our error type
 mod error;
@@ -151,12 +151,33 @@ impl RunParameters {
     }
 }
 
-/// Parse command-line arguments and create RunParameters
-pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
-    let cmd = Command::new("QMK Keyboard Communication Tool")
+/// Parsed command-line arguments (PRD §11 *CLI*).
+///
+/// Wraps [`RunParameters`] (the single command + device-targeting fields that
+/// [`run`] consumes) plus a CLI-only `list_callbacks` flag. When `list_callbacks`
+/// is true, `command` is [`RunCommand::QueryInfo`] and the binary (`main.rs`)
+/// performs a follow-up callback sweep: after `run` returns
+/// [`CommandResponse::Info`], it loops `QueryCallback(0..callback_count)` and
+/// prints each name. This multi-call flow is a CLI convenience (PRD §11) and is
+/// NOT part of the library's single-command [`run`] API — hence the wrapper
+/// rather than a field on `RunParameters` (which `qmkonnect` uses directly).
+#[derive(Debug, Clone)]
+pub struct CliArgs {
+    /// The command + device-targeting fields, ready for [`run`].
+    pub params: RunParameters,
+    /// `true` when `--list-callbacks` was given. Signals `main.rs` to sweep
+    /// callbacks after the initial `QueryInfo` returns `CommandResponse::Info`.
+    pub list_callbacks: bool,
+}
+
+/// Build the clap `Command` for `qmk_notifier` (PRD §11 *CLI*). Pure: it only
+/// configures the parser; the actual `get_matches()`/`try_get_matches_from()`
+/// call is made by the caller (so tests can use the no-exit `try_*` form).
+fn build_cli_command() -> Command {
+    Command::new("QMK Keyboard Communication Tool")
         .version("1.0.0")
         .author("Your Name")
-        .about("Sends raw HID reports to QMK keyboards")
+        .about("Sends raw HID reports to QMK keyboards; --query-info / --list-callbacks diagnose typed-capable boards")
         .arg(
             Arg::new("message")
                 .help("Message to send to keyboard")
@@ -215,18 +236,68 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
                 .help("Create example configuration file (REMOVED)")
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("query-info")
+                .long("query-info")
+                .help("Query device capability info (QUERY_INFO, cmd 0x01)")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("list-callbacks")
+                .long("list-callbacks")
+                .help("List the firmware callback registry (runs QUERY_INFO, then sweeps QUERY_CALLBACK)")
+                .action(ArgAction::SetTrue),
+        )
+        // The four "action" selectors are mutually exclusive: at most one may be
+        // present (clap rejects combinations). `required(false)` lets zero through
+        // so `--verbose`-alone reaches select_command's MissingRequiredParameter
+        // arm (and no-args at all still triggers arg_required_else_help above).
+        .group(
+            ArgGroup::new("action")
+                .args(["message", "list", "query-info", "list-callbacks"])
+                .multiple(false)
+                .required(false),
+        )
         // Show help when no arguments are provided
-        .arg_required_else_help(true);
+        .arg_required_else_help(true)
+}
 
-    let matches = cmd.get_matches();
-
-    // Check for removed feature
+/// Resolve the parsed CLI matches into a `(RunCommand, list_callbacks)` pair.
+///
+/// Priority (PRD §11; the `action` ArgGroup makes these mutually exclusive, so
+/// the order is defensive): `--create-config` (removed-feature trap) > `--list` >
+/// `--query-info` > `--list-callbacks` > `message` positional. `--list-callbacks`
+/// maps to `RunCommand::QueryInfo` with `list_callbacks = true` — the actual
+/// callback sweep is a multi-call flow handled by `main.rs`, not a single command.
+fn select_command(matches: &ArgMatches) -> Result<(RunCommand, bool), QmkError> {
     if matches.get_flag("create-config") {
         return Err(QmkError::RemovedFeature(
             "Config file creation has been removed. All parameters must be provided explicitly."
                 .to_string(),
         ));
     }
+    if matches.get_flag("list") {
+        return Ok((RunCommand::ListDevices, false));
+    }
+    if matches.get_flag("query-info") {
+        return Ok((RunCommand::QueryInfo, false));
+    }
+    if matches.get_flag("list-callbacks") {
+        return Ok((RunCommand::QueryInfo, true));
+    }
+    if let Some(message) = matches.get_one::<String>("message") {
+        return Ok((RunCommand::SendMessage(message.to_string()), false));
+    }
+    Err(QmkError::MissingRequiredParameter(
+        "one of message, --list, --query-info, or --list-callbacks".to_string(),
+    ))
+}
+
+/// Build [`CliArgs`] from already-parsed clap matches (PRD §11). Pure: takes
+/// `&ArgMatches`, returns `Result<CliArgs, QmkError>` — never exits the process.
+/// This is the testable core of [`parse_cli_args`].
+fn parse_matches(matches: &ArgMatches) -> Result<CliArgs, QmkError> {
+    let (command, list_callbacks) = select_command(matches)?;
 
     // Parse parameters with defaults.
     //
@@ -257,20 +328,35 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
 
     let verbose = matches.get_flag("verbose");
 
-    // Determine command
-    let command = if matches.get_flag("list") {
-        RunCommand::ListDevices
-    } else if let Some(message) = matches.get_one::<String>("message") {
-        RunCommand::SendMessage(message.to_string())
-    } else {
-        return Err(QmkError::MissingRequiredParameter(
-            "message or --list flag".to_string(),
-        ));
-    };
+    Ok(CliArgs {
+        params: RunParameters::new(command, vendor_id, product_id, usage_page, usage, verbose),
+        list_callbacks,
+    })
+}
 
-    Ok(RunParameters::new(
-        command, vendor_id, product_id, usage_page, usage, verbose,
-    ))
+/// Parse command-line arguments into [`CliArgs`] (PRD §11 *CLI*).
+///
+/// The returned [`CliArgs::params`] holds a single [`RunCommand`] plus the
+/// device-targeting fields, ready for [`run`]. Two diagnostic flags are exposed
+/// on top of the legacy `message` / `--list` actions:
+///
+/// - `--query-info` ⇒ [`RunCommand::QueryInfo`] (`list_callbacks = false`).
+///   `run` returns [`CommandResponse::Info`] on a typed-capable board.
+/// - `--list-callbacks` ⇒ [`RunCommand::QueryInfo`] with `list_callbacks = true`.
+///   The binary (`main.rs`) then performs a follow-up sweep: after `run` returns
+///   [`CommandResponse::Info`], it loops `QueryCallback(0..callback_count)` and
+///   prints each name. This multi-call flow is a CLI convenience (PRD §11) and is
+///   NOT part of the library's single-command [`run`] API.
+///
+/// The four action selectors (`message`, `--list`, `--query-info`,
+/// `--list-callbacks`) are mutually exclusive (clap `ArgGroup`). `--help`,
+/// `--version`, unknown flags, and action conflicts are handled by clap's own
+/// print-and-exit UX; post-parse logic errors surface as [`QmkError`]
+/// (`RemovedFeature` for `--create-config`; `MissingRequiredParameter` when no
+/// action is given).
+pub fn parse_cli_args() -> Result<CliArgs, QmkError> {
+    let matches = build_cli_command().get_matches();
+    parse_matches(&matches)
 }
 
 /// Build the on-wire payload for `command` — the bytes AFTER the `0x81 0x9F`
@@ -581,9 +667,9 @@ mod tests {
         let result = run(params);
         match result {
             Ok(_) => {
-                // Success is also acceptable if a device is connected. The
-                // placeholder path returns CommandResponse::Legacy { matched: true };
-                // we deliberately do NOT assert its shape here (no hardware in CI).
+                // Success is also acceptable if a device is connected. The reply
+                // is decoded by parse_reply; we deliberately do NOT assert its
+                // shape here (no hardware in CI).
             }
             Err(QmkError::DeviceNotFound { .. }) => {
                 // Expected when no devices are found
@@ -790,6 +876,97 @@ mod tests {
         assert!(
             matches!(result, Err(QmkError::DeviceNotFound { .. })),
             "ApplyHostContext must dispatch to send_raw_report; expected DeviceNotFound, got {result:?}",
+        );
+    }
+
+    // ---- P1.M4.T1.S1: --query-info / --list-callbacks flag parsing ----
+    // Build ArgMatches via the no-exit try_get_matches_from (NEVER get_matches* in a
+    // test — it exits the process on error), then exercise the pure parse_matches.
+    fn cli_for(args: &[&str]) -> CliArgs {
+        let matches = build_cli_command()
+            .try_get_matches_from(args)
+            .expect("test args should parse");
+        parse_matches(&matches).expect("test args should resolve to CliArgs")
+    }
+
+    #[test]
+    fn test_parse_query_info_flag() {
+        let cli = cli_for(&["qmk_notifier", "--query-info"]);
+        assert!(matches!(cli.params.command, RunCommand::QueryInfo));
+        assert!(!cli.list_callbacks);
+        // Defaults preserved.
+        assert_eq!(cli.params.usage_page, DEFAULT_USAGE_PAGE);
+        assert_eq!(cli.params.usage, DEFAULT_USAGE);
+        assert_eq!(cli.params.vendor_id, None);
+        assert_eq!(cli.params.product_id, None);
+    }
+
+    #[test]
+    fn test_parse_list_callbacks_flag() {
+        let cli = cli_for(&["qmk_notifier", "--list-callbacks"]);
+        // list-callbacks maps to QueryInfo + the sweep signal.
+        assert!(matches!(cli.params.command, RunCommand::QueryInfo));
+        assert!(cli.list_callbacks);
+    }
+
+    #[test]
+    fn test_query_info_combines_with_device_flags() {
+        // Device-targeting flags are orthogonal to the action group.
+        let cli = cli_for(&[
+            "qmk_notifier",
+            "--query-info",
+            "--vendor-id",
+            "0xFEED",
+            "-v",
+        ]);
+        assert!(matches!(cli.params.command, RunCommand::QueryInfo));
+        assert_eq!(cli.params.vendor_id, Some(0xFEED));
+        assert!(cli.params.verbose);
+        assert!(!cli.list_callbacks);
+    }
+
+    #[test]
+    fn test_message_and_list_still_parse() {
+        let cli = cli_for(&["qmk_notifier", "hello"]);
+        assert!(matches!(cli.params.command, RunCommand::SendMessage(s) if s == "hello"));
+        assert!(!cli.list_callbacks);
+
+        let cli = cli_for(&["qmk_notifier", "--list"]);
+        assert!(matches!(cli.params.command, RunCommand::ListDevices));
+        assert!(!cli.list_callbacks);
+    }
+
+    #[test]
+    fn test_action_selectors_are_mutually_exclusive() {
+        // Each combination must be a clap conflict error (Err, NOT a process exit —
+        // try_get_matches_from returns Result).
+        let cases: &[&[&str]] = &[
+            &["qmk_notifier", "--query-info", "msg"],
+            &["qmk_notifier", "--query-info", "--list-callbacks"],
+            &["qmk_notifier", "--list-callbacks", "msg"],
+            &["qmk_notifier", "--list", "--query-info"],
+        ];
+        for args in cases {
+            assert!(
+                build_cli_command()
+                    .try_get_matches_from(args.iter().copied())
+                    .is_err(),
+                "expected clap to reject conflicting actions: {args:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_action_given_is_missing_parameter() {
+        // --verbose alone: not a clap error (group is required(false)), but
+        // select_command finds no action ⇒ MissingRequiredParameter.
+        let matches = build_cli_command()
+            .try_get_matches_from(["qmk_notifier", "--verbose"])
+            .expect("--verbose alone parses at the clap level");
+        let result = parse_matches(&matches);
+        assert!(
+            matches!(result, Err(QmkError::MissingRequiredParameter(_))),
+            "expected MissingRequiredParameter, got {result:?}",
         );
     }
 }

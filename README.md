@@ -58,6 +58,12 @@ qmk_notifier --vendor-id 0xFEED --product-id 0x0000 "your_message_here"
 # List all connected HID devices
 qmk_notifier --list
 
+# Query a typed-capable board's capability info (proto_ver, feature_flags, callback_count)
+qmk_notifier --query-info
+
+# Enumerate the firmware callback registry (QueryInfo then a QueryCallback sweep)
+qmk_notifier --list-callbacks
+
 # Enable verbose output
 qmk_notifier -v "your_message_here"
 ```
@@ -73,9 +79,11 @@ qmk_notifier -v "your_message_here"
 | `--usage` | `-a` | `0x61` | HID usage, decimal or `0xHEX`. |
 | `--verbose` | `-v` | off | Enable verbose transport logging. |
 | `--list` | `-l` | off | List all available HID devices. |
+| `--query-info` | | off | Query device capability info (QUERY_INFO, cmd 0x01). |
+| `--list-callbacks` | | off | List firmware callback registry (QueryInfo + QueryCallback sweep). |
 | `--help` | | | Display help information. |
 
-*Either `message` or `--list` must be provided.
+*One of `message`, `--list`, `--query-info`, or `--list-callbacks` must be provided.
 
 ## Default Reference Values
 
@@ -91,7 +99,7 @@ These values are commonly used for QMK keyboards but must be provided explicitly
 This package can also be used as a library in other Rust projects:
 
 ```rust
-use qmk_notifier::{RunParameters, RunCommand, run};
+use qmk_notifier::{RunParameters, RunCommand, CommandResponse, run};
 
 // Send a message — auto-discover (VID/PID = None ⇒ match any QMK keyboard)
 let params = RunParameters::new(
@@ -103,15 +111,29 @@ let params = RunParameters::new(
     false,             // verbose
 );
 
+// run() returns Result<CommandResponse, QmkError>. The variant depends on the
+// command and the device's reply:
 match run(params) {
-    Ok(()) => println!("Message sent successfully"),   // v0.2.x: run() returns ()
+    Ok(CommandResponse::Legacy { matched }) => {
+        println!("legacy match-bool reply: matched={matched}");
+    }
+    Ok(CommandResponse::Info { proto_ver, feature_flags, .. }) => {
+        println!("typed-capable: proto {proto_ver}, flags 0x{feature_flags:02X}");
+    }
+    Ok(CommandResponse::Timeout) => {
+        println!("no reply (legacy/offline device)");
+    }
+    Ok(other) => println!("reply: {other:?}"), // CallbackName | Ack
     Err(e) => eprintln!("Error: {}", e),
 }
 ```
 
-> Round B (v0.3.0) changes `run()` to return `Result<CommandResponse, QmkError>`
-> and adds typed-command variants (`QueryInfo`, `QueryCallback`, `SetOs`,
-> `ApplyHostContext`). See `PRD.md` §10.
+`run()` returns [`Result<CommandResponse, QmkError>`](PRD.md). The variants:
+`Legacy { matched }` (legacy string reply, `response[0]` ∈ {0,1}),
+`Info { proto_ver, feature_flags, callback_count, board_rules_present }`
+(QUERY_INFO), `CallbackName { index, name }` (QUERY_CALLBACK),
+`Ack { ok }` (SET_OS / APPLY_HOST_CONTEXT), and `Timeout` (no reply within the
+bounded read — a non-capable/offline device). See `PRD.md` §7 and §10.
 
 ## Technical Details
 
