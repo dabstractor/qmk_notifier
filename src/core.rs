@@ -1498,4 +1498,81 @@ mod tests {
         );
         assert!(reply.is_some(), "the one queued reply must be captured");
     }
+
+    #[test]
+    fn burst_to_one_captures_last_reply_for_multi_report() {
+        // Issue-1 regression: a multi-report payload makes the firmware emit one
+        // 32-byte reply per report (PRD §4.4). The first N-1 replies have
+        // response[0] == 0 (the message is incomplete — no ETX seen, so the
+        // legacy match-bool stays false); only the LAST reply — the ETX report —
+        // carries the real result. burst_to_one must capture the LAST reply,
+        // not the first (the v0.3.0 capture-first bug returned the intermediate 0).
+        // Proven live: 2-report send -> firmware replies = [0, 1] (TEST_RESULTS.md).
+        let payload = vec![0u8; 31]; // 31 bytes => 2 reports (PAYLOAD_PER_REPORT = 30)
+        let batch_count = batches_for(&payload);
+        assert_eq!(
+            batch_count, 2,
+            "31-byte payload must span exactly 2 reports"
+        );
+
+        let fake = FakeHid::new();
+        // Reply to report 1: intermediate, message incomplete (no ETX) => match
+        // is false => the per-report ack is response[0] == 0.
+        fake.push_post(vec![0u8; 33]);
+        // Reply to report 2: the ETX report => the firmware computes the real
+        // match-bool here => response[0] == 1 (the result we must return).
+        fake.push_post({
+            let mut r = vec![0u8; 33];
+            r[0] = 1;
+            r
+        });
+
+        let (success, reply) = burst_to_one(&fake, &payload, batch_count, false);
+        assert!(
+            success,
+            "write path must succeed (FakeHid::write returns Ok)"
+        );
+        let reply = reply.expect("must capture the ETX-report reply, not time out");
+        assert_eq!(
+            reply[0], 1,
+            "must capture the ETX-report reply (1), not the intermediate [0] reply"
+        );
+        assert_eq!(
+            fake.writes.borrow().len(),
+            2,
+            "must write exactly 2 reports for a 2-report payload"
+        );
+    }
+
+    #[test]
+    fn burst_to_one_single_report_unchanged() {
+        // Single-report payloads were never affected by Issue 1 (1 report => 1
+        // reply => the only reply IS the ETX reply). This guards against the
+        // capture-last rewrite (P1.M1.T2.S2) regressing the batch_count == 1
+        // path: the loop must still capture the one reply it reads.
+        let payload = vec![0u8; 10]; // 10 bytes => 1 report
+        let batch_count = batches_for(&payload);
+        assert_eq!(batch_count, 1, "10-byte payload must fit in 1 report");
+
+        let fake = FakeHid::new();
+        // The one (ETX) reply: match-bool == 1.
+        fake.push_post({
+            let mut r = vec![0u8; 33];
+            r[0] = 1;
+            r
+        });
+
+        let (success, reply) = burst_to_one(&fake, &payload, batch_count, false);
+        assert!(success, "write path must succeed");
+        let reply = reply.expect("must capture the single reply");
+        assert_eq!(
+            reply[0], 1,
+            "must capture the single (ETX) reply's match-bool"
+        );
+        assert_eq!(
+            fake.writes.borrow().len(),
+            1,
+            "must write exactly 1 report for a single-report payload"
+        );
+    }
 }
