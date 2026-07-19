@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Host-Side Rules & Typed Commands",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Implement the typed-command namespace (§4.6), host-authoritative SET_OS (§4.7), and the host-side-rules machinery (§14) in notifier.{c,h}, with host test coverage and README docs — while leaving the legacy string path, the pattern matcher, multi-OS selection, and all prior tests byte-for-byte unchanged. This delta promotes the previously planned v0.3.0 host-rules feature to implemented. Baseline: 2023/2023 pattern_match tests + 31/31 notifier stub tests green.",
       "milestones": [
         {
@@ -223,7 +223,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Host Tests + Acceptance Gate + Changeset Docs",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Dedicated host test coverage for the typed-command namespace + host rules, the extended stub harness, the runner, the full §11.2 acceptance gate, and the README sync.",
           "tasks": [
             {
@@ -333,14 +333,14 @@
               "type": "Task",
               "id": "P1.M3.T3",
               "title": "Sync changeset-level documentation (README.md)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add a Host-Side Rules & Typed Commands section to README.md documenting the new feature end-to-end and the backward-compat guarantee. This is the Mode B cross-cutting documentation task.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T3.S1",
                   "title": "Add Host-Side Rules & Typed Commands section to README.md; update Setup / Running Tests / What-this-does-NOT-change",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",

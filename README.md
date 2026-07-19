@@ -14,6 +14,14 @@ QMK-Notifier is a powerful QMK module that enables dynamic keymap switching base
   different `application_class` strings on different OSes just works.
   Strictly opt-in: a keymap that defines only the default maps behaves
   exactly as before. See [Multi-OS Configuration](#multi-os-configuration).
+- **Host-side rules & typed commands (opt-in)** — a desktop host (QMKonnect)
+  can push layer/callback decisions over Raw HID without reflashing, via a
+  typed-command namespace (`QUERY_INFO`/`QUERY_CALLBACK`/`SET_OS`/
+  `APPLY_HOST_CONTEXT`). The host declares its OS authoritatively and applies
+  per-window host layers + callbacks that stack on top of, or replace, your
+  board `DEFINE_SERIAL_*` rules. Strictly opt-in: a keymap without
+  `DEFINE_HOST_CALLBACKS` is byte-for-byte unchanged. See
+  [Host-Side Rules & Typed Commands](#host-side-rules--typed-commands).
 
 ## How It Works
 
@@ -66,6 +74,14 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
 Multi-OS users also override `process_detected_host_os_kb` to push the detected
 OS into the module — see [Multi-OS Configuration](#multi-os-configuration) for
 the one-line wiring.
+
+Host-rules users additionally define a named callback registry with
+`DEFINE_HOST_CALLBACKS({ … })` in `keymap.c` (see
+[Host-Side Rules & Typed Commands](#host-side-rules--typed-commands)). No
+`rules.mk` change is required for host rules — the host (QMKonnect) negotiates
+capability automatically at connect via the `QUERY_INFO` typed command, then
+drives `SET_OS` + `APPLY_HOST_CONTEXT`. Omit the macro and the module behaves
+exactly as before.
 
 ### 3. Update your rules.mk
 
@@ -265,11 +281,154 @@ on the OS-detection subsystem — it only consumes the `os_variant_t` *type*.
   header and `ETX` terminator.
 - **The pattern matcher is untouched.** Multi-OS only selects *which* map is
   scanned; the matching engine (`pattern_match`) is identical.
-- **Host-provided OS and host-side rules are planned future work**, not
-  implemented. Today the OS comes only from QMK's firmware-side `OS_DETECTION`,
-  pushed in by the keymap. A future version may let the host declare its OS
-  (authoritatively) and/or ship rules from the desktop — both are out of scope
+- **Host-provided OS and host-side rules are now implemented** — see
+  [Host-Side Rules & Typed Commands](#host-side-rules--typed-commands).
+  While a host is connected it declares its OS authoritatively via `SET_OS`
+  (taking precedence over this firmware-side heuristic); with no host
+  connected, `OS_DETECTION` remains the only OS signal exactly as described
   here.
+
+## Host-Side Rules & Typed Commands
+
+Host-side rules are an **opt-in overlay** on the legacy string path. A desktop
+host (QMKonnect) can push layer/callback decisions over Raw HID **without
+reflashing**: it declares its OS authoritatively and applies per-window host
+layers + callbacks that stack on top of, or replace, your board
+`DEFINE_SERIAL_*` rules. A keymap that does not define `DEFINE_HOST_CALLBACKS`
+is **byte-for-byte unchanged** — the feature is structural (no `#ifdef`), so the
+module links and behaves identically to today.
+
+### How it works
+
+The firmware keeps **two independent state planes**:
+
+- **Board state** — `activated_layer`, the current command, and `current_os`,
+  driven by the legacy string path (`process_full_message`) and defined via
+  `DEFINE_SERIAL_*` / `DEFINE_SERIAL_*_OS`. This is everything the rest of this
+  README describes.
+- **Host state** — a separate host layer (`host_layer`, independent of the board
+  `activated_layer`) and a host-callback enable set, driven by **typed
+  commands**. Defined via `DEFINE_HOST_CALLBACKS`.
+
+The two planes touch each other only at two explicit seams: the `clear_board`
+flag (an explicit board teardown inside `APPLY_HOST_CONTEXT`) and `SET_OS`
+(which updates the shared `current_os`). Otherwise they are orthogonal — a
+legacy string send never touches host state, and a typed command never touches
+board state (except via `clear_board`).
+
+**Discriminator.** The byte after the magic header selects the path:
+`data[2] == 0xF0` routes to the typed path (checked on the first report of a
+message only); anything else is the legacy string (unchanged). Because the
+sanitizer allows only `0x20–0x7E`, `0xF0` can never begin a real matched string,
+so a host that sends only legacy strings coexists unchanged. Typed responses are
+prefixed `0x51` (≥2), which is distinct from the legacy `0`/`1` match-bool, so
+the host disambiguates without ambiguity.
+
+### Enabling host rules
+
+Host rules need **no `rules.mk` change**. In `keymap.c`, define a named callback
+registry:
+
+```c
+static void mute_on(void)  { /* unmute / show mute OSD */ }
+static void mute_off(void) { /* restore */ }
+
+DEFINE_HOST_CALLBACKS({
+    { "mute", &mute_on, &mute_off },
+});
+```
+
+Each row is `{ name, on_enable, on_disable }` (`on_disable` may be `NULL`). The
+`id` is the array index, stable per build. At connect, the host sends
+`QUERY_INFO`; if the firmware is typed-capable (`proto_ver == 2`) it replies
+`[0x51][0x01][2][flags][count][board_rules_present]`, the host then sweeps
+`QUERY_CALLBACK(i)` for `i in 0..count` to build its `name → id` map, and finally
+drives `SET_OS` + `APPLY_HOST_CONTEXT`. Omit the macro and `count` is `0`, the
+`callback_registry` feature bit is clear, and the module behaves exactly as
+before.
+
+### The typed-command namespace at a glance
+
+Typed commands are ETX-framed and may span multiple 32-byte reports, exactly like
+legacy strings: `[0x81][0x9F][0xF0][cmd_id][args…][0x03]`. Responses are 32-byte
+reports: `[0x51][cmd_echo][payload…][padding]`.
+
+| `cmd_id` | Name | Request args | Response payload (after `[0x51][cmd_echo]`) |
+|---|---|---|---|
+| `0x01` | `QUERY_INFO` | none | `[proto_ver][feature_flags][callback_count][board_rules_present]` |
+| `0x02` | `QUERY_CALLBACK` | `[index]` | `[index][name bytes, NUL-padded]` (or `[index][0x00]` if absent) |
+| `0x03` | `SET_OS` | `[os_byte]` | `[ack]` (`1` = applied) |
+| `0x05` | `APPLY_HOST_CONTEXT` | `[layer][flags][count][id0][id1]…` | `[ack]` (`1` = applied) |
+
+- `proto_ver` = `2` here (a legacy string-only firmware reports `1`). Firmware-owned.
+- `feature_flags` = `0x01` (`APPLY_HOST_CONTEXT` supported) OR'd with `0x02` when a
+  callback registry is present. (`0x04` is reserved for future VIA-coexist.)
+- `callback_count` = the size of your `DEFINE_HOST_CALLBACKS` registry (`0` if absent).
+- `board_rules_present` = `1` iff **any** board map (default or any per-OS map) is
+  non-empty — a single bit; per-OS granularity is not exposed.
+- `os_byte`: `0 UNSURE · 1 LINUX · 2 WINDOWS · 3 MACOS · 4 IOS` (mirrors QMK's
+  `os_variant_t`).
+
+### Stack vs replace per window
+
+The firmware offers **both** stack and replace semantics; the **host chooses per
+window** via the `clear_board` flag (bit 0 of `APPLY_HOST_CONTEXT.flags`):
+
+- **Stack** (`clear_board = 0`): the host first sends the legacy **string** (the
+  board runs its rules → sets its layer/command → replies), then sends
+  `APPLY_HOST_CONTEXT{layer, callbacks, clear_board=0}`. Board layer/command stay
+  active; the host layer stacks above; board callbacks fire first, host callbacks
+  after.
+- **Replace** (`clear_board = 1`): the host sends **only**
+  `APPLY_HOST_CONTEXT{layer, callbacks, clear_board=1}` (no string). The firmware
+  `deactivate_layer()`s its board layer and `disable_command()`s its board command,
+  then applies the host layer + callbacks. Board rules are inert for that window
+  and re-engage normally on the host's next string send.
+
+The host computes `clear_board` from its own per-rule `disable_firmware_config`
+flag in `rules.toml` (a window is *replace* iff **every** matched rule is
+disabling). The host-side design — the `rules.toml` schema, the matcher, and the
+per-window decision — is canonical in
+**[`qmkonnect/spec/HOST_RULES.md`](https://github.com/dabstractor/qmkonnect/blob/main/spec/HOST_RULES.md)**;
+this firmware's `pattern_match.c` (and its test corpus) remain the single source
+of truth for match semantics. Host callback transitions use
+**disable-before-enable** ordering (mirroring the board path): newly-out-of-set
+ids fire `on_disable`, then newly-in-set ids fire `on_enable`.
+
+### Host-authoritative OS
+
+While a host is connected and has sent `SET_OS`, the host's value is
+**authoritative** for `current_os` — it takes precedence over the
+`OS_DETECTION` heuristic described in [Multi-OS Configuration](#multi-os-configuration).
+`SET_OS` updates `current_os` through the same internal seam as
+`notifier_set_os`, so an OS **change** clears notifier state (disable command +
+deactivate layer) before recording the new OS, exactly as a firmware-side OS
+change does. With no host connected, `OS_DETECTION` remains the only OS signal.
+
+Host layers are **reserved ≥ 224** (`HOST_LAYER_BASE`), so they resolve above
+board layers under QMK's highest-layer-wins rule; `0xFF` (255) clears the host
+layer.
+
+### Backward compatibility (the guarantee)
+
+If you do **not** define `DEFINE_HOST_CALLBACKS`, the module provides weak
+`{NULL, 0}` accessors — there is no registry, `callback_count` is `0`, the
+callback-registry feature bit is clear, and the module links and behaves
+identically to the pre-host-rules firmware. A host that sends only legacy strings
+never triggers the typed path. You cannot break an existing keymap by *not*
+opting in.
+
+### What this does NOT change
+
+- **The legacy string wire protocol is unchanged.** The companion app still sends
+  `class\x1Dtitle` as 32-byte Raw HID reports with the `0x81 0x9F` magic header
+  and `ETX` terminator; the `process_full_message` dispatch is byte-for-byte
+  identical.
+- **The pattern matcher is untouched.** `pattern_match.{c,h}` is the single source
+  of truth for match semantics; the host-side matcher lives in `qmkonnect`, not here.
+- **Board `DEFINE_*` / `DEFINE_*_OS` rules keep working.** When the host stacks,
+  they run first; when the host replaces, they are inert for that window and
+  re-engage on the next string send. The choice is the host's, per window.
 
 ## Companion Projects
 
@@ -344,7 +503,7 @@ A second, separate gate validates the **receiver/dispatcher** side of the module
 ```
 
 This stub-compiles `notifier.c` once against the minimal `qmk_stubs/`, links it
-into **two** host test binaries, and runs both:
+into **three** host test binaries, and runs all three:
 
 - **`test_notifier_dispatch`** (14 cases) — F4 delimiter matching, dispatcher
   ordering, `hid_notify` reassembly, sanitization, acknowledgement, and NULL
@@ -354,6 +513,14 @@ into **two** host test binaries, and runs both:
   default fallback when an OS map is absent/matches nothing/`OS_UNSURE`,
   independent command vs layer tracks, and `notifier_set_os` idempotence +
   clear-on-change.
+- **`test_notifier_host`** (64 cases) — the typed-command / host-rules
+  contract (§4.6 / §4.7 / §14): `QUERY_INFO` capability handshake +
+  `has_been_queried` timing, `QUERY_CALLBACK` name discovery (valid +
+  out-of-range), `SET_OS` (response layout, OS-map selection, F9
+  clear-on-change, idempotence), `APPLY_HOST_CONTEXT` STACK vs REPLACE
+  (`clear_board`), callback-diff ordering (disable-before-enable),
+  host-layer clear (`0xFF`), legacy-string/typed coexistence, non-magic
+  discard, and multi-report typed reassembly.
 
 ### Current Test Status
 
@@ -366,10 +533,16 @@ The pattern matching library implements a full regex construct set:
 - `+` - One-or-more quantifier (linear-time, no backtracking)
 - `*`, `^`, `$` - Wildcard, start anchor, end anchor
 
-**Overall Test Results**: all suites green with 0 failures:
+**Overall Test Results**:
 - Pattern-match corpus (`./run_all_tests.sh`, 9 suites): **2023/2023** tests passing.
 - Notifier stub gate (`./run_notifier_stub_tests.sh`): `test_notifier_dispatch`
   **14/14** + `test_notifier_os` **31/31** cases passing.
+- `test_notifier_host` (64 cases): the four `SET_OS` blocks are currently pending
+  an upstream ETX-collision framing fix in `notifier.c` (the `SET_OS` `cmd_id`
+  `0x03` collides with the `ETX` terminator during reassembly); the remaining 57
+  assertions (`QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT` STACK vs
+  REPLACE / callback-diff ordering / host-layer clear / legacy-typed coexistence
+  / non-magic discard / multi-report reassembly) pass.
 **Performance Impact**: Negligible (~0.1 microseconds per `pattern_match` call)
 
 All original functionality works identically (no breaking changes), and
