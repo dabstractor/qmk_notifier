@@ -213,14 +213,14 @@
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Evolve burst_to_one to capture first reply",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Change burst_to_one from returning bool to returning (bool, Option<Vec<u8>>), where the Option carries the first 32-byte IN-side reply captured with a bounded read_timeout. The existing non-blocking drain of surplus reports is preserved.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Change burst_to_one return type and add bounded reply capture",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T2.S1"
@@ -240,14 +240,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Evolve send_raw_report to propagate reply data",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Propagate the captured reply upward through try_send_once and send_raw_report so run() can access it. Changes return types at each level of the call stack.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Update try_send_once and send_raw_report to propagate first reply",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T1.S1"

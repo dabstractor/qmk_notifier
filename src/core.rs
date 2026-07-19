@@ -19,9 +19,9 @@ pub const REPORT_LENGTH: usize = 32;
 // CMD_SET_OS, CMD_APPLY_HOST_CONTEXT) now have a real consumer:
 // `build_typed_payload` (P1.M1.T2.S1) references them in compiled code, so they
 // no longer need an `#[allow(dead_code)]` (verified: a const referenced by an
-// allow-dead fn's body does NOT warn). Only RESPONSE_MARKER and
-// REPLY_READ_TIMEOUT_MS still carry `#[allow(dead_code)]` — their consumers land
-// in P1.M1.T3 (parse_reply + the reply reader).
+// allow-dead fn's body does NOT warn). RESPONSE_MARKER is consumed by `parse_reply`
+// (P1.M2.T2.S1); REPLY_READ_TIMEOUT_MS is consumed by `burst_to_one`'s bounded
+// reply capture (P1.M3.T1.S1). Neither carries `#[allow(dead_code)]`.
 
 /// Typed-command discriminator: first payload byte after 0x81 0x9F (PRD §10.1).
 pub(crate) const CMD_DISCRIMINATOR: u8 = 0xF0;
@@ -34,7 +34,6 @@ pub(crate) const CMD_SET_OS: u8 = 0x03;
 pub(crate) const CMD_APPLY_HOST_CONTEXT: u8 = 0x05;
 /// Bounded timeout (ms) for reading the first reply after a burst.
 /// Must be > 0 (unlike the drain's non-blocking timeout=0).
-#[allow(dead_code)]
 const REPLY_READ_TIMEOUT_MS: i32 = 1000;
 
 pub fn parse_hex_or_decimal(input: &str) -> Result<u16, QmkError> {
@@ -201,7 +200,11 @@ fn try_send_once(
                 );
             }
 
-            if burst_to_one(interface, data, batch_count, verbose) {
+            // burst_to_one now returns (bool, Option<Vec<u8>>). The bool is the
+            // write-success flag; the captured reply is PROPAGATED up through
+            // try_send_once / send_raw_report / run() in P1.M3.T2.S1. Until then
+            // we take only the success flag via .0 and discard the reply here.
+            if burst_to_one(interface, data, batch_count, verbose).0 {
                 succeeded += 1;
             } else {
                 failed += 1;
@@ -235,8 +238,23 @@ fn try_send_once(
 }
 
 /// Burst-write `data` to a single device as `batch_count` back-to-back raw-HID
-/// reports, then drain any pending IN-side reports. Returns `false` on the
-/// first write error.
+/// reports, then CAPTURE the first device reply (bounded wait), then drain any
+/// surplus IN-side reports.
+///
+/// Returns `(false, None)` on the first write error; otherwise `(true, reply)`,
+/// where `reply` is `Some(bytes)` when a reply arrived within
+/// `REPLY_READ_TIMEOUT_MS`, or `None` on timeout / read failure. The bool is the
+/// write-success flag (same semantics as the pre-v0.3.0 `-> bool` form); the
+/// `Option<Vec<u8>>` is the FIRST captured IN report, decoded downstream by
+/// `parse_reply` into a `CommandResponse` (PRD §8, §10.2).
+///
+/// Reply capture (v0.3.0): after the burst-write succeeds, the FIRST IN report is
+/// read with a bounded `read_timeout(REPLY_READ_TIMEOUT_MS)` so the host can
+/// parse the typed response. Surplus IN reports are then drained non-blocking
+/// (bounded by `IN_DRAIN_MAX`) so a persistent handle does not stall on
+/// accumulated replies. `read_timeout` returns `Ok(0)` on timeout/no-data (NOT
+/// an error) and `Ok(n > 0)` on a real read; only `n > 0` yields a captured reply
+/// (`external_deps.md` §read_timeout semantics).
 ///
 /// Burst-write is safe without a per-report ack: QMK's raw-HID OUT endpoint
 /// buffers up to `RAW_OUT_CAPACITY` (4) reports and drains them all in one
@@ -245,7 +263,12 @@ fn try_send_once(
 /// the device buffer is full it NAKs the transfer and the host's `write()`
 /// blocks until space frees. Reports are never dropped, so burst-write is safe
 /// for ANY title length. See IMPLEMENTATION_PLAN.md.
-fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose: bool) -> bool {
+fn burst_to_one(
+    interface: &HidDevice,
+    data: &[u8],
+    batch_count: usize,
+    verbose: bool,
+) -> (bool, Option<Vec<u8>>) {
     let mut request_data = [0u8; REPORT_LENGTH + 1]; // stack array (was vec!)
     request_data[1] = 0x81;
     request_data[2] = 0x9F;
@@ -269,8 +292,26 @@ fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose:
             if verbose {
                 println!("Error on batch {}: {}", batch + 1, e);
             }
-            return false;
+            return (false, None);
         }
+    }
+
+    // Capture the FIRST device reply with a bounded timeout (v0.3.0). Unlike the
+    // drain below (non-blocking, discards surplus), this read WAITS up to
+    // REPLY_READ_TIMEOUT_MS for the first reply so the host can parse the typed
+    // response. read_timeout returns Ok(0) on timeout/no-data (NOT an error) and
+    // Ok(n>0) when data was read; only n>0 counts as a captured reply.
+    // (external_deps.md §read_timeout semantics.)
+    let mut reply: Option<Vec<u8>> = None;
+    let mut read_buf = [0u8; REPORT_LENGTH + 1];
+    match interface.read_timeout(&mut read_buf, REPLY_READ_TIMEOUT_MS) {
+        Ok(n) if n > 0 => {
+            reply = Some(read_buf[..n].to_vec());
+            if verbose {
+                println!("Captured device reply: {} bytes", n);
+            }
+        }
+        _ => {} // Ok(0) = timeout, Err = read failure ⇒ reply stays None
     }
 
     // Drain any pending IN-side reports (non-blocking). The firmware sends a
@@ -293,7 +334,7 @@ fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose:
         }
     }
 
-    true
+    (true, reply)
 }
 
 /// Number of reports needed to carry `data.len()` payload bytes (0 when empty).
