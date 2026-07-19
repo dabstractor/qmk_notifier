@@ -331,11 +331,11 @@ fn try_send_once(
 /// blocks until space frees. Reports are never dropped, so burst-write is safe
 /// for ANY title length. See IMPLEMENTATION_PLAN.md.
 ///
-/// HID I/O note: the interface this operates on (`&HidDevice`) now also implements
-/// the [`RawHid`] trait; this function is scheduled to be genericized over
-/// `impl RawHid` in the next subtask to enable a `FakeHid` test double.
-fn burst_to_one(
-    interface: &HidDevice,
+/// HID I/O note: `interface` is generic over the [`RawHid`] trait (both
+/// `hidapi::HidDevice` and the `FakeHid` test double implement it), so this
+/// function's reply-capture logic is unit-testable without a physical keyboard.
+fn burst_to_one<T: RawHid>(
+    interface: &T,
     data: &[u8],
     batch_count: usize,
     verbose: bool,

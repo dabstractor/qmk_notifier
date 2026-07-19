@@ -18,7 +18,7 @@
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Introduce HID Transport Trait Abstraction",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Define a RawHid trait abstracting the two hidapi methods burst_to_one calls (write, read_timeout), implement it for hidapi::HidDevice, and genericize burst_to_one's interface parameter over impl RawHid. This enables injecting a FakeHid test double for regression tests without touching try_send_once, DeviceCache, or send_raw_report.",
               "subtasks": [
                 {
@@ -40,7 +40,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Genericize burst_to_one over impl RawHid",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -66,7 +66,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Add FakeHid test double under #[cfg(test)]",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S2"
