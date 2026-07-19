@@ -19,9 +19,14 @@ pub const REPORT_LENGTH: usize = 32;
 // CMD_SET_OS, CMD_APPLY_HOST_CONTEXT) now have a real consumer:
 // `build_typed_payload` (P1.M1.T2.S1) references them in compiled code, so they
 // no longer need an `#[allow(dead_code)]` (verified: a const referenced by an
-// allow-dead fn's body does NOT warn). RESPONSE_MARKER is consumed by `parse_reply`
-// (P1.M2.T2.S1); REPLY_READ_TIMEOUT_MS is consumed by `burst_to_one`'s bounded
-// reply capture (P1.M3.T1.S1). Neither carries `#[allow(dead_code)]`.
+// allow-dead fn's body does NOT warn). RESPONSE_MARKER is consumed by
+// `parse_reply` (and by `classify_response`'s echo guard, P1.M1.T3.S1);
+// REPLY_READ_TIMEOUT_MS is consumed by `burst_to_one`'s bounded reply capture
+// and by `read_typed_response` (P1.M1.T3.S1). So neither carries
+// `#[allow(dead_code)]`. The remaining allow-dead items are the read/parse
+// FUNCTIONS themselves (`parse_reply`, `classify_response`,
+// `read_typed_response`, `burst_and_read_one`), whose consumer is `run()`
+// (P1.M1.T3.S2); they drop their allows when run() goes live.
 
 /// Typed-command discriminator: first payload byte after 0x81 0x9F (PRD §10.1).
 pub(crate) const CMD_DISCRIMINATOR: u8 = 0xF0;
@@ -32,8 +37,12 @@ pub(crate) const CMD_QUERY_INFO: u8 = 0x01;
 pub(crate) const CMD_QUERY_CALLBACK: u8 = 0x02;
 pub(crate) const CMD_SET_OS: u8 = 0x03;
 pub(crate) const CMD_APPLY_HOST_CONTEXT: u8 = 0x05;
-/// Bounded timeout (ms) for reading the first reply after a burst.
-/// Must be > 0 (unlike the drain's non-blocking timeout=0).
+/// Bounded timeout (ms) for reading the first typed reply after a burst
+/// ([`read_typed_response`], and `burst_to_one`'s first-reply capture).
+/// Must be > 0 (unlike the drain's non-blocking timeout=0) so the read BLOCKS
+/// for a real reply rather than polling. 1000 ms is a conservative bound; P4's
+/// QUERY_CALLBACK sweep against a non-capable device may want to lower it (each
+/// query against a silent device waits up to this long).
 const REPLY_READ_TIMEOUT_MS: i32 = 1000;
 
 pub fn parse_hex_or_decimal(input: &str) -> Result<u16, QmkError> {
@@ -103,6 +112,33 @@ const IN_DRAIN_MAX: usize = 32;
 /// partial send is never re-sent (no duplicate notifications).
 const SEND_RETRIES: usize = 1;
 
+/// Burst-send `data` to every raw-HID interface matching the VID/PID/usage-page/
+/// usage predicate, retrying the whole send (with a cache rebuild) once on a
+/// total failure. Returns the FIRST device reply captured by the burst-write path.
+///
+/// # Return
+/// - `Ok(Some(bytes))` — every matched device accepted the burst AND at least the
+///   first device replied within [`REPLY_READ_TIMEOUT_MS`] (the bounded read in
+///   [`burst_to_one`]). `bytes` is that first reply's raw IN report (up to
+///   [`REPORT_LENGTH`] + 1 bytes). Decode it downstream via `parse_reply`
+///   (P1.M3.T3.S1) into a [`crate::CommandResponse`] (PRD §8, §10.2).
+/// - `Ok(None)` — the burst succeeded but NO device replied within
+///   [`REPLY_READ_TIMEOUT_MS`] (timeout / read failure / a legacy device that
+///   sends no typed reply). The caller treats `None` as a non-capable device and
+///   stays in string-only mode (PRD §10.2, §8).
+/// - `Err(QmkError::DeviceNotFound)` — no interface matched the predicate.
+/// - `Err(QmkError::PartialSendError { succeeded, failed })` — some devices
+///   accepted the burst, some did not. A partial send is NEVER retried (PRD §14
+///   invariant 4), so any captured reply is discarded on this path.
+/// - `Err(QmkError::SendReportError(..))` — every device failed after exhausting
+///   retries.
+///
+/// `data` carries ONLY the payload after the `0x81 0x9F` magic header:
+/// [`burst_to_one`] prepends that header (and the leading report-ID byte) per
+/// 33-byte report. For legacy strings the caller appends the `0x03` ETX terminator
+/// first; for typed commands `build_typed_payload` produces the `[0xF0][cmd][args]`
+/// [0x03]` payload (PRD §4, §10.1). Multi-report burst-write and the device cache
+/// are shared by all command types.
 pub fn send_raw_report(
     data: &[u8],
     vendor_id: Option<u16>,
@@ -110,7 +146,7 @@ pub fn send_raw_report(
     usage_page: u16,
     usage: u16,
     verbose: bool,
-) -> Result<(), QmkError> {
+) -> Result<Option<Vec<u8>>, QmkError> {
     let key = MatchKey {
         vendor_id,
         product_id,
@@ -126,11 +162,11 @@ pub fn send_raw_report(
 
     for attempt in 0..=SEND_RETRIES {
         match try_send_once(&key, data, batch_count, verbose)? {
-            SendOutcome::AllSucceeded => return Ok(()),
-            SendOutcome::Partial { succeeded, failed } => {
+            (SendOutcome::AllSucceeded, reply) => return Ok(reply),
+            (SendOutcome::Partial { succeeded, failed }, _) => {
                 return Err(QmkError::PartialSendError { succeeded, failed });
             }
-            SendOutcome::TotalFailure if attempt < SEND_RETRIES => {
+            (SendOutcome::TotalFailure, _) if attempt < SEND_RETRIES => {
                 // The cache was already invalidated inside try_send_once; the
                 // next iteration re-enumerates + reopens.
                 if verbose {
@@ -142,7 +178,7 @@ pub fn send_raw_report(
                 }
                 continue;
             }
-            SendOutcome::TotalFailure => {
+            (SendOutcome::TotalFailure, _) => {
                 return Err(QmkError::SendReportError(hidapi::HidError::HidApiError {
                     message: "Failed to send to any devices".to_string(),
                 }));
@@ -172,7 +208,7 @@ fn try_send_once(
     data: &[u8],
     batch_count: usize,
     verbose: bool,
-) -> Result<SendOutcome, QmkError> {
+) -> Result<(SendOutcome, Option<Vec<u8>>), QmkError> {
     let mut cache = lock_cache();
     ensure_cache(&mut cache, key, verbose)?;
 
@@ -183,6 +219,7 @@ fn try_send_once(
 
     let mut succeeded = 0usize;
     let mut failed = 0usize;
+    let mut first_reply: Option<Vec<u8>> = None; // first successful device wins
 
     {
         let devices: &Vec<HidDevice> = &cache.as_ref().expect("cache populated").devices;
@@ -200,12 +237,12 @@ fn try_send_once(
                 );
             }
 
-            // burst_to_one now returns (bool, Option<Vec<u8>>). The bool is the
-            // write-success flag; the captured reply is PROPAGATED up through
-            // try_send_once / send_raw_report / run() in P1.M3.T2.S1. Until then
-            // we take only the success flag via .0 and discard the reply here.
-            if burst_to_one(interface, data, batch_count, verbose).0 {
+            let (success, reply) = burst_to_one(interface, data, batch_count, verbose);
+            if success {
                 succeeded += 1;
+                if first_reply.is_none() {
+                    first_reply = reply; // first successful device wins (transport_evolution.md §KDD #4)
+                }
             } else {
                 failed += 1;
                 if verbose {
@@ -228,13 +265,14 @@ fn try_send_once(
         }
     }
 
-    Ok(if succeeded == 0 {
+    let outcome = if succeeded == 0 {
         SendOutcome::TotalFailure
     } else if failed > 0 {
         SendOutcome::Partial { succeeded, failed }
     } else {
         SendOutcome::AllSucceeded
-    })
+    };
+    Ok((outcome, first_reply))
 }
 
 /// Burst-write `data` to a single device as `batch_count` back-to-back raw-HID
@@ -443,9 +481,11 @@ pub(crate) fn build_typed_payload(cmd: &crate::RunCommand) -> Vec<u8> {
 ///
 /// Every field access in the typed path uses defensive `.get(...)` indexing —
 /// firmware replies may be truncated, so missing bytes default to `0` rather
-/// than panicking. Consumer: the `run()` typed dispatch (P1.M3.T3.S1). Until then
-/// this is referenced only by tests, hence `#[allow(dead_code)]` — remove it in
-/// P1.M3.T3 once `run()` calls it (same lifecycle as [`build_typed_payload`]).
+/// than panicking. Consumer chain: [`classify_response`] (P1.M1.T3.S1) →
+/// [`read_typed_response`] → [`burst_and_read_one`] → the `run()` typed dispatch
+/// (P1.M1.T3.S2). The `#[allow(dead_code)]` stays until `run()` goes live (S2
+/// lifts it together with the read/classify functions' allows); it is cosmetic
+/// now since `classify_response` (allow-dead) calls this.
 #[allow(dead_code)]
 pub(crate) fn parse_reply(response: &[u8]) -> crate::CommandResponse {
     use crate::CommandResponse;

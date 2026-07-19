@@ -206,7 +206,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Transport Reply Capture Integration",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Evolve the existing transport layer (burst_to_one, try_send_once, send_raw_report) to capture the first device reply instead of discarding all replies, and wire run() to use build_command_data + send_raw_report + parse_reply for full typed-command dispatch. This is the integration milestone that connects the pure functions (M2) to the HID I/O layer.",
           "tasks": [
             {
@@ -240,14 +240,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Evolve send_raw_report to propagate reply data",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Propagate the captured reply upward through try_send_once and send_raw_report so run() can access it. Changes return types at each level of the call stack.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Update try_send_once and send_raw_report to propagate first reply",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T1.S1"
@@ -267,14 +267,14 @@
               "type": "Task",
               "id": "P1.M3.T3",
               "title": "Wire run() full typed-command dispatch",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Replace the placeholder/stub logic in run() with the real dispatch: build_command_data -> send_raw_report -> parse_reply -> CommandResponse. This ties together all the work from M1 and M2.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T3.S1",
                   "title": "Implement run() dispatch using build_command_data, send_raw_report, and parse_reply",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S2",
