@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Reply-Capture Correctness (Issues 1 & 3)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Fix the headline defect: burst_to_one captures the wrong reply for multi-report payloads (Issue 1, Critical), and add a pre-send IN-buffer drain to prevent stale-reply capture across rapid sequential sends (Issue 3, Major). Both changes target the same function (core.rs::burst_to_one) and both require introducing a RawHid trait abstraction to enable regression testing without real hardware.",
           "tasks": [
             {
@@ -120,14 +120,14 @@
               "type": "Task",
               "id": "P1.M1.T3",
               "title": "Add Pre-Send IN-Buffer Drain (Issue 3)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add a non-blocking IN-buffer drain loop at the START of burst_to_one (before the write loop) so each send starts from an empty reply queue. Without this, a stale reply from a prior send that arrives in the kernel IN buffer after that send's drain loop ended gets captured as the current send's reply, producing nondeterministic CommandResponse values.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T3.S1",
                   "title": "Add pre-send drain loop before the burst-write",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S2"
@@ -144,7 +144,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S2",
                   "title": "Add stale-reply regression test",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1",

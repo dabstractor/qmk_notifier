@@ -305,7 +305,8 @@ fn try_send_once(
     Ok((outcome, first_reply))
 }
 
-/// Burst-write `data` to a single device as `batch_count` back-to-back raw-HID
+/// DRAIN any stale IN-side replies left by a prior send (Issue 3), then
+/// burst-write `data` to a single device as `batch_count` back-to-back raw-HID
 /// reports, then CAPTURE the last device reply (the ETX-report reply, which
 /// carries the real result), then drain any
 /// surplus IN-side reports.
@@ -329,6 +330,17 @@ fn try_send_once(
 /// (NOT an error) and `Ok(n > 0)` on a real read; a timeout/error breaks the
 /// capture loop early (`external_deps.md` §read_timeout semantics).
 ///
+/// Pre-send drain (v0.3.1, Issue 3): BEFORE the burst-write, up to
+/// `IN_DRAIN_MAX` IN reports are read non-blocking (`read_timeout(0)`) and
+/// discarded. USB latency can deliver a *prior* send's reply into the kernel
+/// IN buffer *after* that prior send's own (post-capture) drain loop ended;
+/// without this pre-send flush, the current send's bounded capture read would
+/// grab that stale reply instead of its own, making `CommandResponse`
+/// nondeterministic across rapid sequential sends. Same loop shape as the
+/// surplus drain below; `read_timeout(0)` returns `Ok(0)` on no data (NOT an
+/// error), so the loop breaks after one `Ok(0)` read in the common
+/// no-stale-data case (cheap: one non-blocking poll).
+///
 /// Burst-write is safe without a per-report ack: QMK's raw-HID OUT endpoint
 /// buffers up to `RAW_OUT_CAPACITY` (4) reports and drains them all in one
 /// main-loop pass (`raw_hid_task`: `while (receive_report(...))
@@ -349,6 +361,18 @@ fn burst_to_one<T: RawHid>(
     let mut request_data = [0u8; REPORT_LENGTH + 1]; // stack array (was vec!)
     request_data[1] = 0x81;
     request_data[2] = 0x9F;
+
+    // Drain any stale IN-side replies left by a prior send (Issue 3). USB latency
+    // can deliver a prior send's reply after that send's drain loop ended; without
+    // this pre-send flush, the next send's bounded read would capture the stale
+    // reply instead of its own.
+    let mut stale_buf = [0u8; REPORT_LENGTH + 1];
+    for _ in 0..IN_DRAIN_MAX {
+        match interface.read_timeout(&mut stale_buf, 0) {
+            Ok(n) if n > 0 => continue,
+            _ => break,
+        }
+    }
 
     for batch in 0..batch_count {
         let start_idx = batch * PAYLOAD_PER_REPORT;
