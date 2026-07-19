@@ -4,19 +4,18 @@
 Target: a single document complete enough for a developer agent to reimplement
 this crate from scratch. Read top to bottom before writing code.
 
-> **Revision — v0.2.x (shipped) + round-B typed-command transport (specified).**
-> v0.2.x is the current shipped state (the `v0.2.1` git tag, which `qmkonnect`
-> pins): a pure transport layer that burst-writes the `class\x1Dtitle` string and
-> *drains/discards* device replies. Round B (v0.3.0, specified here in §10)
-> promotes the crate to a **typed-command transport**: it reads + parses replies
-> and frames the typed commands defined canonically in the firmware spec
-> (`qmk-notifier/PRD.md` §4.6). Round B is **specified but not yet implemented**
-> in this crate. **The host-side pattern matcher lives in `qmkonnect`, not here**
-> — this crate stays transport-only.
+> **Product scope.** This is the complete product & engineering specification
+> for the `qmk_notifier` Rust crate (library + CLI). The crate is the
+> **transport layer** of the QMKonnect ecosystem: it owns Raw-HID wire framing,
+> device discovery/caching, burst-write with retry, typed-command framing, and
+> device-reply parsing. It sends the legacy `class\x1Dtitle` string **and** the
+> typed commands defined canonically in the firmware spec (`qmk-notifier/PRD.md`
+> §4.6), and returns each parsed reply to the caller. **The host-side pattern
+> matcher lives in `qmkonnect`, not here** — this crate is transport-only.
 
 > **Scope of "this crate".** This document specifies **`qmk_notifier`**
 > (underscore) — the Rust **library + CLI** that owns Raw-HID wire framing,
-> device discovery/caching, burst-write, and (round B) typed-command
+> device discovery/caching, burst-write, and typed-command
 > transport + response parsing. It is *not* the desktop app (`qmkonnect`,
 > `dabstractor/qmkonnect`) and *not* the firmware (`qmk-notifier`, hyphen,
 > `dabstractor/qmk-notifier`). Those are the other nodes of the ecosystem.
@@ -27,14 +26,14 @@ this crate from scratch. Read top to bottom before writing code.
 
 1. [Product Overview](#1-product-overview)
 2. [Repository Layout & Deliverables](#2-repository-layout--deliverables)
-3. [Public API (v0.2.x, shipped)](#3-public-api-v02x-shipped)
+3. [Public API](#3-public-api)
 4. [Wire Protocol — Transport Side](#4-wire-protocol--transport-side)
 5. [Device Discovery & Matching](#5-device-discovery--matching)
 6. [Device Cache](#6-device-cache)
 7. [Send Path, Burst-Write & Retry](#7-send-path-burst-write--retry)
 8. [Response Handling](#8-response-handling)
 9. [Error Model](#9-error-model)
-10. [Round B (v0.3.0) — Typed-Command Transport (specified)](#10-round-b-v030--typed-command-transport-specified)
+10. [Typed-Command Transport](#10-typed-command-transport)
 11. [CLI](#11-cli)
 12. [Non-Functional Requirements](#12-non-functional-requirements)
 13. [Versioning, Release & Cross-Repo Links](#13-versioning-release--cross-repo-links)
@@ -56,17 +55,17 @@ interface (usage page `0xFF60` / usage `0x61`). It owns **transport only**:
 - device discovery by usage page/usage (with optional VID/PID disambiguation),
 - a process-global cache of opened HID handles,
 - burst-write with one-rebuild retry, and
-- (round B) typed-command framing + reply parsing.
+- typed-command framing + reply parsing.
 
 It deliberately owns **no behavior**: it does not detect windows, does not match
-patterns, and does not decide layers or callbacks. In round B the host-side
-matcher is ported into **`qmkonnect`**, not here.
+patterns, and does not decide layers or callbacks. The host-side matcher is
+ported into **`qmkonnect`**, not here.
 
 ### 1.2 The broader ecosystem (a dev must understand all three)
 
 | Project | Repo | Language | Role |
 |---|---|---|---|
-| **qmk_notifier** ← *this repo* | `dabstractor/qmk_notifier` | Rust | **Transport crate** (+ CLI). Wire framing, device cache, burst-write, (round B) typed-command transport + reply parsing. Linked by `qmkonnect`. |
+| **qmk_notifier** ← *this repo* | `dabstractor/qmk_notifier` | Rust | **Transport crate** (+ CLI). Wire framing, device cache, burst-write, typed-command transport + reply parsing. Linked by `qmkonnect`. |
 | **QMKonnect** | `dabstractor/qmkonnect` | Rust | Cross-platform **desktop daemon**. Detects the foreground window, runs the host-side matcher (`rules.toml`), and orchestrates the handshake + per-window sends via this crate. |
 | **qmk-notifier** | `dabstractor/qmk-notifier` | C | On-keyboard **receiver + matcher + actor** (firmware). Owns the canonical wire contract. |
 | **qmk_firmware** | `qmk/qmk_firmware` | C | Upstream QMK; qmk-notifier plugs into it via `RAW_ENABLE`. |
@@ -86,7 +85,7 @@ qmk_notifier/
 ├── Cargo.toml          # package qmk_notifier, edition 2021; lib + bin
 ├── Cargo.lock
 ├── README.md           # user-facing README (kept in sync with this SPEC)
-├── SPEC.md             # this document
+├── PRD.md              # this document
 └── src/
     ├── lib.rs          # public API re-exports, RunCommand, RunParameters, parse_cli_args, run()
     ├── core.rs         # framing, constants, device discovery, cache, burst-write, retry
@@ -104,7 +103,7 @@ but unused after config-file support was removed — they may be dropped.)
 
 ---
 
-## 3. Public API (v0.2.x, shipped)
+## 3. Public API
 
 `lib.rs` re-exports the transport surface from `core.rs`:
 
@@ -116,7 +115,28 @@ pub use core::{
 };
 pub use error::QmkError;
 
-pub enum RunCommand { SendMessage(String), ListDevices }
+/// What to send over the wire. The typed variants carry the host-side-rules
+/// protocol (detailed in §10); SendMessage is the legacy window-string path.
+pub enum RunCommand {
+    SendMessage(String),   // legacy "{class}\x1D{title}" string
+    ListDevices,
+    QueryInfo,             // cmd 0x01
+    QueryCallback(u8),     // cmd 0x02, arg = index
+    SetOs(HostOs),         // cmd 0x03
+    ApplyHostContext { layer: Option<u8>, callbacks: Vec<u8>, clear_board: bool }, // cmd 0x05
+}
+
+#[repr(u8)]
+pub enum HostOs { Unsure = 0, Linux = 1, Windows = 2, Macos = 3, Ios = 4 }  // mirrors QMK os_variant_t
+
+/// Parsed device reply (see §10.2).
+pub enum CommandResponse {
+    Legacy { matched: bool },              // response[0] in {0,1}
+    Info { proto_ver: u8, feature_flags: u8, callback_count: u8, board_rules_present: bool },
+    CallbackName { index: u8, name: Option<String> },
+    Ack { ok: bool },
+    Timeout,                               // no reply within the read timeout
+}
 
 pub struct RunParameters {
     pub command: RunCommand,
@@ -132,14 +152,13 @@ impl RunParameters {
 }
 
 pub fn parse_cli_args() -> Result<RunParameters, QmkError>;
-pub fn run(params: RunParameters) -> Result<(), QmkError>;          // v0.2.x: () ; round B: CommandResponse (§10)
+pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError>;
 ```
 
 **Semantics:** VID/PID are `Option<u16>`; `None` ⇒ "match any" (auto-discovery by
 usage page/usage — the keystone zero-config path). `usage_page`/`usage` are always
-required and default to the QMK Raw-HID convention (`0xFF60` / `0x61`).
-
----
+required and default to the QMK Raw-HID convention (`0xFF60` / `0x61`). The
+typed-command variants and `CommandResponse` transport behavior are in §10.
 
 ## 4. Wire Protocol — Transport Side
 
@@ -190,8 +209,7 @@ QMK USB protocol. (An earlier firmware build reused the header-stripped `length`
 of `30` and the reply was rejected; fixed in qmk-notifier commit `01a51935`. The
 stale "ack silently dropped because `length == RAW_EPSIZE`" wording that appeared
 in older revisions of this crate's comments and the sibling specs has been
-corrected.) v0.2.x of this crate only *drains/discards* replies (§8); round B
-reads + parses them.
+corrected.) This crate reads + parses the reply (§8).
 
 ---
 
@@ -280,21 +298,20 @@ reports (§8). Returns `false` on the first `write()` error.
 
 ## 8. Response Handling
 
-### 8.1 v0.2.x (shipped) — drain only
+The firmware sends a 32-byte reply per burst (`raw_hid_send(response,
+RAW_REPORT_SIZE)`, §4.4). This crate **reads and parses** it:
 
-After a burst, `burst_to_one` drains pending IN-side reports non-blocking:
-`read_timeout(&mut buf, 0)` in a loop bounded by `IN_DRAIN_MAX = 32`, continuing
-only on `Ok(n > 0)`, breaking on `Ok(0)`/`Err`. Replies are **discarded** —
-`run()` returns `()`. Draining is still required so a persistent handle does not
-stall on accumulated replies.
+- For a `SendMessage`, `response[0]` is the legacy match-bool (`0`/`1`) ⇒
+  `CommandResponse::Legacy { matched }`.
+- For a typed command, `response[0] == 0x51` ⇒ typed reply, decoded by the
+  command-echo byte into `Info` / `CallbackName` / `Ack` (§10.2). No reply within
+  the bounded `read_timeout` ⇒ `Timeout` (the caller treats a non-`0x51` reply or
+  `Timeout` as a legacy / non-capable device and stays in string-only mode).
 
-### 8.2 Round B (specified) — read + parse
-
-See §10. `run()` returns the parsed `CommandResponse`. After a typed-command burst
-the crate reads **one** 32-byte IN report (with a bounded timeout) and decodes it;
-a legacy `SendMessage` decodes the `0`/`1` match-bool into `CommandResponse::Legacy`.
-
----
+`burst_to_one` also **drains** any surplus IN-side reports non-blocking
+(`read_timeout(&mut buf, 0)`, bounded by `IN_DRAIN_MAX = 32`) so a persistent
+handle does not stall on accumulated replies. `run()` returns the parsed
+`CommandResponse`.
 
 ## 9. Error Model
 
@@ -306,8 +323,8 @@ a legacy `SendMessage` decodes the `0`/`1` match-bool into `CommandResponse::Leg
 | `DeviceNotFound { vid, pid, usage_page, usage }` | No interface matched the filter. |
 | `DeviceOpenError(String)` | Matches found but none openable (permissions). |
 | `SendReportError(HidError)` | A write failed (wrapped hidapi error). |
-| `HidReadError(String)` | *(round B)* a reply read failed. |
-| `NoResponseReceived(String)` | *(round B)* no reply within the timeout. |
+| `HidReadError(String)` | a reply read failed. |
+| `NoResponseReceived(String)` | no reply within the timeout. |
 | `PartialSendError { succeeded, failed }` | Some devices succeeded, some failed (not retried). |
 | `InvalidHexValue(String)` / `InvalidDecimalValue(String)` | CLI ID parse failure. |
 | `MissingRequiredParameter(String)` | CLI invoked with neither message nor `--list`. |
@@ -319,62 +336,14 @@ a legacy `SendMessage` decodes the `0`/`1` match-bool into `CommandResponse::Leg
 
 ---
 
-## 10. Round B (v0.3.0) — Typed-Command Transport (specified)
+## 10. Typed-Command Transport
 
-Round B promotes the crate from "string + drain" to "string + typed commands +
-parsed replies". The **canonical wire contract is the firmware spec**
-(`qmk-notifier/PRD.md` §4.6); this section specifies the **crate-side** API and
-behavior. Not yet implemented; bump to **v0.3.0** and tag.
+The typed commands carry the host-side-rules protocol (host-side design canonical
+in `qmkonnect/spec/HOST_RULES.md`; wire contract in the firmware
+`qmk-notifier/PRD.md` §4.6). The `RunCommand` variants, `HostOs`, and
+`CommandResponse` are defined in §3; this section covers transport behavior.
 
-### 10.1 New `RunCommand` variants
-
-```rust
-pub enum RunCommand {
-    SendMessage(String),                                     // legacy string (unchanged framing)
-    ListDevices,
-    // --- round B ---
-    QueryInfo,                                               // cmd 0x01
-    QueryCallback(u8),                                       // cmd 0x02, arg = index
-    SetOs(HostOs),                                           // cmd 0x03
-    ApplyHostContext { layer: Option<u8>, callbacks: Vec<u8>, clear_board: bool }, // cmd 0x05
-}
-```
-
-- `SetOs(HostOs)`: the host declares its OS at connect. `HostOs` mirrors QMK's
-  `os_variant_t`:
-  ```rust
-  #[repr(u8)]
-  pub enum HostOs { Unsure = 0, Linux = 1, Windows = 2, Macos = 3, Ios = 4 }
-  ```
-- `ApplyHostContext { layer, callbacks, clear_board }`: `layer = None` ⇒ `0xFF`
-  (clear host layer); `Some(n)` ⇒ the host-layer number (host layers are reserved
-  ≥ 224 by convention). `callbacks` = the **full desired enabled** id set
-  (uncapped — multi-report). `clear_board = true` ⇒ set the firmware's
-  `clear_board` flag bit (firmware clears its board layer/command before applying
-  the host context — the per-window "replace" semantics).
-
-### 10.2 `CommandResponse` (run() now returns this)
-
-```rust
-pub enum CommandResponse {
-    Legacy { matched: bool },                                // response[0] ∈ {0,1}
-    Info { proto_ver: u8, feature_flags: u8,
-           callback_count: u8, board_rules_present: bool },  // [0x51][0x01] then payload
-    CallbackName { index: u8, name: Option<String> },        // [0x51][0x02] then payload
-    Ack { ok: bool },                                        // [0x51][0x03|0x05] then [ack]
-    Timeout,                                                 // no reply within timeout
-}
-```
-
-```rust
-pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError>;  // BREAKING vs v0.2.x ()
-```
-
-> **Breaking change (semver-0 ⇒ allowed at 0.3.0).** `qmkonnect` pins this crate
-> by git tag, so the bump is coordinated. `SendMessage` callers map
-> `CommandResponse::Legacy { matched }` (and may ignore it, as today).
-
-### 10.3 Typed-command framing
+### 10.1 Framing
 
 Typed commands share the `0x81 0x9F` namespace; the discriminator is `data[2] == 0xF0`:
 
@@ -385,36 +354,41 @@ Typed commands share the `0x81 0x9F` namespace; the discriminator is `data[2] ==
 The crate builds this as `data` and reuses the **same ETX-framed, multi-report
 chunking** as strings (`batches_for`, `burst_to_one`). Single-report commands
 (`QUERY_INFO`, `QUERY_CALLBACK`, `SET_OS`) fit one report; `APPLY_HOST_CONTEXT`
-may span multiple reports when the callback list exceeds 30 payload bytes — this
-removes any fixed cap on the callback-id list. The device cache and retry logic
-(§6–§7) are **unchanged** — typed commands reuse the cached handles for the same
-`MatchKey`.
+may span multiple reports when the callback list exceeds 30 payload bytes — so the
+callback-id list is uncapped. The device cache and retry logic (§6–§7) are
+**unchanged** — typed commands reuse the cached handles for the same `MatchKey`;
+retry/cache behavior matches `SendMessage`.
 
-### 10.4 Reply parsing
+- `ApplyHostContext { layer, callbacks, clear_board }`: `layer = None` ⇒ `0xFF`
+  (clear host layer); `Some(n)` ⇒ the host-layer number (host layers are reserved
+  ≥ 224 by convention). `callbacks` = the **full desired enabled** id set.
+  `clear_board = true` ⇒ set the firmware's `clear_board` flag bit (the firmware
+  clears its board layer/command before applying the host context — the per-window
+  "replace" semantics).
+- `SetOs(HostOs)`: the host declares its OS at connect; the host OS is
+  authoritative while connected (`HostOs` mirrors QMK's `os_variant_t`).
+
+### 10.2 Reply parsing
 
 After a typed-command burst, read **one** 32-byte IN report with a bounded
 `read_timeout`:
 
 - `response[0] == 0x51` ⇒ typed reply; decode by `response[1]` (cmd echo) into
   `Info` / `CallbackName` / `Ack`.
-- `response[0] ∈ {0,1}` ⇒ `Legacy { matched }` (legacy firmware answering a typed
-  command as a no-match string, or the reply to a `SendMessage`).
-- no reply within timeout ⇒ `Timeout`. The caller treats `Timeout` /
-  non-`0x51`-on-a-typed-command as **legacy ⇒ string-only mode** (per the firmware
-  handshake, `PRD.md` §4.6).
+- `response[0] in {0,1}` ⇒ `Legacy { matched }` (a non-capable device answering a
+  typed command as a no-match string, or the reply to a `SendMessage`).
+- no reply within timeout ⇒ `Timeout` ⇒ the caller stays in string-only mode (per
+  the firmware handshake, `PRD.md` §4.6).
 
-The drain loop (§8.1) is retained to keep the handle from stalling on extra
-replies.
+The drain loop (§8) is retained to keep the handle from stalling on extra replies.
 
-### 10.5 What stays out of this crate
+### 10.3 What stays out of this crate
 
 - **Pattern matching** lives in `qmkonnect` (ported from the firmware
   `pattern_match.c`, full parity: `* ^ $ WT + \d \D \w \W \s \S \b \B .`). This
   crate does not match.
-- **Rule evaluation, handshake orchestration, OS detection on the desktop** — all
+- **Rule evaluation, handshake orchestration, desktop OS detection** — all
   `qmkonnect`. This crate only transports bytes and parses replies.
-
----
 
 ## 11. CLI
 
@@ -434,9 +408,9 @@ replies.
 or `--list` is required. `parse_hex_or_decimal` accepts `0x..`/`0X..` (hex) or bare
 decimal.
 
-*(Round B may add diagnostic subcommands — e.g. `query-info`, `list-callbacks` —
-but these are conveniences over the library API and are not required for
-`qmkonnect`, which uses the library directly.)*
+*(Diagnostic subcommands — e.g. `query-info`, `list-callbacks` — are optional
+conveniences over the library API and are not required for `qmkonnect`, which
+uses the library directly.)*
 
 ---
 
@@ -464,13 +438,13 @@ but these are conveniences over the library API and are not required for
   ```toml
   qmk_notifier = { package = "qmk_notifier",
                    git = "https://github.com/dabstractor/qmk_notifier",
-                   tag = "v0.2.1" }   # → v0.3.0 once round B lands
+                   tag = "v0.3.0" }   # the release implementing this spec
   ```
 - **Cross-repo source of truth:**
   - Canonical wire contract → `dabstractor/qmk-notifier` `PRD.md` §4 (firmware).
   - Host-side orchestration / `rules.toml` → `dabstractor/qmkonnect`
     `spec/HOST_RULES.md`.
-  - Transport (this crate) → this `SPEC.md`.
+  - Transport (this crate) → this `PRD.md`.
 
 ---
 
@@ -485,7 +459,7 @@ but these are conveniences over the library API and are not required for
    required.
 4. **The device cache is keyed by `MatchKey`** and invalidated on any write
    failure; a partial send is never retried.
-5. **Round B typed commands reuse the same framing + cache** as strings —
+5. **Typed commands reuse the same framing + cache** as strings —
    `[0x81][0x9F][0xF0][cmd][args][0x03]`, multi-report, same `MatchKey`.
 6. **Reply parsing disambiguates `0x51` (typed) from `0`/`1` (legacy match-bool)**
    from no-reply (`Timeout`). Legacy/timeout ⇒ the host stays in string-only mode.
