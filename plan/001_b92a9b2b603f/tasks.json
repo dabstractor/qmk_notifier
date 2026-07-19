@@ -113,7 +113,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Pure Framing & Reply Parsing Functions",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Implement the pure, hardware-free functions that build typed-command payloads from RunCommand variants and parse 32-byte device replies into CommandResponse. These are the heart of the typed-command transport and are fully unit-testable without any HID hardware.",
           "tasks": [
             {
@@ -162,14 +162,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Implement parse_reply reply parser",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Pure function in core.rs that decodes a raw 32-byte device reply buffer into a CommandResponse. Handles typed replies (0x51 marker), legacy match-bool (0/1), and no-reply/timeout.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Implement parse_reply for typed 0x51 replies",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S3",
@@ -186,7 +186,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S2",
                   "title": "Add legacy/timeout/edge-case handling to parse_reply and finalize tests",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M2.T2.S1"

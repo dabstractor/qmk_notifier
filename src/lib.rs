@@ -281,14 +281,18 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
 ///
 /// - [`RunCommand::SendMessage`] → [`CommandResponse::Legacy`] as a
 ///   **placeholder** (`matched: true`) until real reply parsing lands in
-///   P1.M3.T3; the firmware's `response[0]` match-bool will be decoded there.
+///   P1.M1.T3; the firmware's `response[0]` match-bool will be decoded there.
 /// - [`RunCommand::ListDevices`] → [`CommandResponse::Timeout`]: no device
 ///   reply was captured because nothing was sent over the wire (list-only path).
 /// - Typed variants (`QueryInfo`/`QueryCallback`/`SetOs`/`ApplyHostContext`)
-///   are stubbed with `todo!()` until full dispatch + reply capture land in
-///   P1.M3.T3.
+///   → build their ETX-terminated payload via `build_typed_payload` and send it
+///   through the SAME [`send_raw_report`] path as legacy strings (device cache,
+///   multi-report burst-write, IN-drain). The reply is currently DRAINED (not
+///   captured) by `burst_to_one`, so a [`CommandResponse::Timeout`] placeholder
+///   is returned; reply capture (P1.M1.T3.S1) will replace it with the real
+///   typed [`CommandResponse`].
 pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError> {
-    match params.command {
+    match &params.command {
         RunCommand::ListDevices => {
             list_hid_devices()?;
             // Semantic: no device reply was received — nothing was sent.
@@ -341,16 +345,37 @@ pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError> {
             Ok(CommandResponse::Legacy { matched: true })
         }
 
-        // --- Typed-command stubs. Dispatch + reply handling land in P1.M3.T3.S1.
-        // `todo!()` expands to `!` (never), which coerces to CommandResponse, so
-        // these arms compile UNCHANGED under the new signature. Do NOT wire real
-        // logic here. Existing tests only construct ListDevices/SendMessage and
-        // never reach these arms. ---
-        RunCommand::QueryInfo => todo!("typed dispatch lands in P1.M3.T3.S1"),
-        RunCommand::QueryCallback(_) => todo!("typed dispatch lands in P1.M3.T3.S1"),
-        RunCommand::SetOs(_) => todo!("typed dispatch lands in P1.M3.T3.S1"),
-        RunCommand::ApplyHostContext { .. } => {
-            todo!("typed dispatch lands in P1.M3.T3.S1")
+        // --- Typed-command dispatch (v0.3.0). Each typed variant builds its
+        // ETX-terminated payload via `build_typed_payload` (core.rs, P1.M1.T2.S1)
+        // and sends it through the SAME `send_raw_report` path as legacy strings
+        // (MatchKey device-cache lookup, multi-report burst-write, bounded
+        // IN-drain). The firmware reply is currently DRAINED and discarded by
+        // `burst_to_one`; reply CAPTURE + `parse_reply` land in P1.M1.T3.S1/S2,
+        // which will replace the `CommandResponse::Timeout` placeholder below
+        // with the real typed `CommandResponse`.
+        //
+        // Arms are collapsed into one or-pattern (not one-per-variant) because
+        // the build+send is identical across variants. Per-variant divergence
+        // arrives with reply PARSING (P1.M1.T3.S2), which will split this arm as
+        // needed (or leave it collapsed if `parse_reply` decodes generically by
+        // the `reply[1]` cmd-echo). Per-variant REQUEST docs live on the
+        // `RunCommand` enum variants themselves. ---
+        RunCommand::QueryInfo
+        | RunCommand::QueryCallback(_)
+        | RunCommand::SetOs(_)
+        | RunCommand::ApplyHostContext { .. } => {
+            let payload = core::build_typed_payload(&params.command);
+            send_raw_report(
+                &payload,
+                params.vendor_id,
+                params.product_id,
+                params.usage_page,
+                params.usage,
+                params.verbose,
+            )?;
+            // Placeholder: the typed reply is drained, not captured. Reply
+            // capture (P1.M1.T3.S1) replaces this with the real CommandResponse.
+            Ok(CommandResponse::Timeout)
         }
     }
 }
@@ -673,5 +698,91 @@ mod tests {
         // Cross-variant inequality: different variants must never compare equal
         // (sanity-check the derived PartialEq across the whole enum).
         assert_ne!(CommandResponse::Timeout, CommandResponse::Ack { ok: false });
+    }
+
+    #[test]
+    fn test_run_query_info_dispatches_to_send() {
+        // Typed dispatch must BUILD + SEND (not `todo!()` panic). A bogus VID/PID
+        // guarantees the device filter (`vendor_id.is_none_or(|v| dev_vid == v)`)
+        // matches NOTHING on any machine — even one with a real QMK keyboard — so
+        // `send_raw_report` deterministically returns `DeviceNotFound`. A
+        // `todo!()` would have panicked and failed this test, so the assertion
+        // proves the arm wired through to `send_raw_report`. Reply capture +
+        // parsing land in P1.M1.T3; that is out of scope here.
+        let params = RunParameters::new(
+            RunCommand::QueryInfo,
+            Some(0xDEAD),
+            Some(0xBEEF),
+            DEFAULT_USAGE_PAGE,
+            DEFAULT_USAGE,
+            false,
+        );
+        let result = run(params);
+        assert!(
+            matches!(result, Err(QmkError::DeviceNotFound { .. })),
+            "QueryInfo must dispatch to send_raw_report; expected DeviceNotFound with bogus VID/PID, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn test_run_query_callback_dispatches_to_send() {
+        // Same dispatch proof as QueryInfo, but for an arg-carrying variant
+        // (index = 5). build_typed_payload correctness is S1's job; here we only
+        // assert the arm reaches send_raw_report.
+        let params = RunParameters::new(
+            RunCommand::QueryCallback(5),
+            Some(0xDEAD),
+            Some(0xBEEF),
+            DEFAULT_USAGE_PAGE,
+            DEFAULT_USAGE,
+            false,
+        );
+        let result = run(params);
+        assert!(
+            matches!(result, Err(QmkError::DeviceNotFound { .. })),
+            "QueryCallback must dispatch to send_raw_report; expected DeviceNotFound, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn test_run_set_os_dispatches_to_send() {
+        // Arg-carrying variant: HostOs::Linux ⇒ os_byte 1. Proves SetOs dispatches.
+        let params = RunParameters::new(
+            RunCommand::SetOs(HostOs::Linux),
+            Some(0xDEAD),
+            Some(0xBEEF),
+            DEFAULT_USAGE_PAGE,
+            DEFAULT_USAGE,
+            false,
+        );
+        let result = run(params);
+        assert!(
+            matches!(result, Err(QmkError::DeviceNotFound { .. })),
+            "SetOs must dispatch to send_raw_report; expected DeviceNotFound, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn test_run_apply_host_context_dispatches_to_send() {
+        // Struct-arg variant: layer=Some(224), 3 callbacks, clear_board=true.
+        // Exercises the multi-field payload path through build_typed_payload and
+        // proves ApplyHostContext dispatches.
+        let params = RunParameters::new(
+            RunCommand::ApplyHostContext {
+                layer: Some(224),
+                callbacks: vec![1, 2, 3],
+                clear_board: true,
+            },
+            Some(0xDEAD),
+            Some(0xBEEF),
+            DEFAULT_USAGE_PAGE,
+            DEFAULT_USAGE,
+            false,
+        );
+        let result = run(params);
+        assert!(
+            matches!(result, Err(QmkError::DeviceNotFound { .. })),
+            "ApplyHostContext must dispatch to send_raw_report; expected DeviceNotFound, got {result:?}",
+        );
     }
 }

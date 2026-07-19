@@ -26,7 +26,6 @@ pub const REPORT_LENGTH: usize = 32;
 /// Typed-command discriminator: first payload byte after 0x81 0x9F (PRD §10.1).
 pub(crate) const CMD_DISCRIMINATOR: u8 = 0xF0;
 /// Typed-response marker: response[0] == 0x51 means typed reply (PRD §10.2).
-#[allow(dead_code)]
 pub(crate) const RESPONSE_MARKER: u8 = 0x51;
 /// Command IDs from firmware PRD §4.6 command table.
 pub(crate) const CMD_QUERY_INFO: u8 = 0x01;
@@ -336,10 +335,10 @@ fn batches_for(data: &[u8]) -> usize {
 /// empty `Vec`; the `run()` dispatch routes them through their own paths
 /// (legacy string + ETX; `list_hid_devices`) and never reaches the typed send.
 ///
-/// Consumer: the `run()` typed-dispatch arm (P1.M1.T2.S2). Until then this is
-/// referenced only by tests, hence `#[allow(dead_code)]` — remove it in S2
-/// once `run()` calls this.
-#[allow(dead_code)]
+/// Consumer: the `run()` typed-dispatch arm in [`crate::run`] (P1.M1.T2.S2).
+/// This is the request-side counterpart to the reply-side `parse_reply`
+/// (P1.M1.T3.S1); the payload it returns feeds the unchanged
+/// [`send_raw_report`] / [`burst_to_one`] send path.
 pub(crate) fn build_typed_payload(cmd: &crate::RunCommand) -> Vec<u8> {
     use crate::RunCommand;
 
@@ -387,6 +386,86 @@ pub(crate) fn build_typed_payload(cmd: &crate::RunCommand) -> Vec<u8> {
 
     payload.push(0x03); // ETX terminator (signals end-of-message before chunking)
     payload
+}
+
+/// Parse a raw device reply into a [`crate::CommandResponse`].
+///
+/// `response[0]` disambiguates the reply
+/// (`firmware_wire_contract.md` §Reply Disambiguation):
+/// - [`crate::RESPONSE_MARKER`] (`0x51`) ⇒ typed reply, decoded by `response[1]`
+///   (the command-echo byte) via [`parse_typed_reply`].
+/// - `0` ⇒ [`crate::CommandResponse::Legacy`] `{ matched: false }`.
+/// - `1` ⇒ [`crate::CommandResponse::Legacy`] `{ matched: true }`.
+/// - empty, or any other marker ⇒ [`crate::CommandResponse::Timeout`] (treat as
+///   a non-capable / legacy / offline device; the caller stays in string-only
+///   mode — PRD §8, §10.2).
+///
+/// Every field access in the typed path uses defensive `.get(...)` indexing —
+/// firmware replies may be truncated, so missing bytes default to `0` rather
+/// than panicking. Consumer: the `run()` typed dispatch (P1.M3.T3.S1). Until then
+/// this is referenced only by tests, hence `#[allow(dead_code)]` — remove it in
+/// P1.M3.T3 once `run()` calls it (same lifecycle as [`build_typed_payload`]).
+#[allow(dead_code)]
+pub(crate) fn parse_reply(response: &[u8]) -> crate::CommandResponse {
+    use crate::CommandResponse;
+    if response.is_empty() {
+        return CommandResponse::Timeout;
+    }
+    match response[0] {
+        RESPONSE_MARKER => parse_typed_reply(response),
+        0 => CommandResponse::Legacy { matched: false },
+        1 => CommandResponse::Legacy { matched: true },
+        _ => CommandResponse::Timeout, // unknown marker ⇒ treat as non-capable
+    }
+}
+
+/// Decode a typed reply (`response[0] == RESPONSE_MARKER`) by its `response[1]`
+/// command-echo byte. Field layouts per `firmware_wire_contract.md` §Field
+/// Definitions; every byte is read with `.get(i).copied().unwrap_or(0)` so a
+/// truncated reply never panics.
+fn parse_typed_reply(response: &[u8]) -> crate::CommandResponse {
+    use crate::CommandResponse;
+    let cmd_echo = response.get(1).copied().unwrap_or(0);
+    match cmd_echo {
+        CMD_QUERY_INFO => CommandResponse::Info {
+            proto_ver: response.get(2).copied().unwrap_or(0),
+            feature_flags: response.get(3).copied().unwrap_or(0),
+            callback_count: response.get(4).copied().unwrap_or(0),
+            // u8 (0/1) on the wire ⇒ bool (the != 0 coercion).
+            board_rules_present: response.get(5).copied().unwrap_or(0) != 0,
+        },
+        CMD_QUERY_CALLBACK => {
+            let index = response.get(2).copied().unwrap_or(0);
+            // Defensive slice: 3.min(len) guarantees the start index never exceeds
+            // len, so a reply shorter than 4 bytes yields an empty name slice
+            // (⇒ None) instead of panicking on `response[3..]`.
+            let name = parse_callback_name(&response[3.min(response.len())..]);
+            CommandResponse::CallbackName { index, name }
+        }
+        // SET_OS (0x03) and APPLY_HOST_CONTEXT (0x05) share the ack shape
+        // [0x51][cmd_echo][ack]; ack == 1 ⇒ applied (ok: true).
+        CMD_SET_OS | CMD_APPLY_HOST_CONTEXT => CommandResponse::Ack {
+            ok: response.get(2).copied().unwrap_or(0) != 0,
+        },
+        _ => CommandResponse::Timeout, // unknown cmd echo ⇒ non-capable
+    }
+}
+
+/// Decode a NUL-terminated ASCII callback name from `bytes`.
+///
+/// Reads up to the first `0x00` NUL or end of slice. Returns `None` when the name
+/// is empty (NUL-at-start or empty slice) — the firmware emits an immediate `0x00`
+/// when a callback has no name or the index is out of range
+/// (`firmware_wire_contract.md` §QUERY_CALLBACK response). `String::from_utf8`
+/// succeeds for the documented ASCII names (`0x20–0x7E`); invalid UTF-8 yields
+/// `None` via `.ok()` (lossy substitution is deliberately NOT used).
+fn parse_callback_name(bytes: &[u8]) -> Option<String> {
+    let end = bytes.iter().position(|&b| b == 0x00).unwrap_or(bytes.len());
+    let name_bytes = &bytes[..end];
+    if name_bytes.is_empty() {
+        return None;
+    }
+    String::from_utf8(name_bytes.to_vec()).ok()
 }
 
 /// Match parameters a cached handle set was opened for. The cache is rebuilt
@@ -540,7 +619,7 @@ fn device_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HostOs, RunCommand};
+    use crate::{CommandResponse, HostOs, RunCommand};
 
     const DEV_VID: u16 = 0xFEED;
     const DEV_PID: u16 = 0x0000;
@@ -886,5 +965,80 @@ mod tests {
         );
         // PROOF OF FIX: with the old `callbacks.len() as u8`, the count byte here
         // would have been 0 (256 as u8 == 0) and this assertion would fail.
+    }
+
+    #[test]
+    fn parse_reply_info_reply() {
+        // QUERY_INFO typed reply (firmware_wire_contract.md §QUERY_INFO response):
+        // [0x51][0x01][proto_ver][feature_flags][callback_count][board_rules_present].
+        let response = [0x51, 0x01, 2, 0x03, 5, 1];
+        assert_eq!(
+            parse_reply(&response),
+            CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x03,
+                callback_count: 5,
+                board_rules_present: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_reply_info_board_rules_absent() {
+        // Same shape, but board_rules_present byte == 0 ⇒ bool false (the != 0
+        // coercion in parse_typed_reply's CMD_QUERY_INFO arm).
+        let response = [0x51, 0x01, 2, 0x03, 5, 0];
+        assert_eq!(
+            parse_reply(&response),
+            CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x03,
+                callback_count: 5,
+                board_rules_present: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_reply_callback_name_named() {
+        // QUERY_CALLBACK typed reply: [0x51][0x02][index][name bytes, NUL-padded].
+        // "Vim" = [V, i, m] = [0x56, 0x69, 0x6d], then a NUL terminator ends the name.
+        let response = [0x51, 0x02, 3, b'V', b'i', b'm', 0x00, 0x00];
+        assert_eq!(
+            parse_reply(&response),
+            CommandResponse::CallbackName {
+                index: 3,
+                name: Some("Vim".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_reply_callback_name_unnamed() {
+        // NUL at the name start ⇒ None. The firmware emits an immediate 0x00 when
+        // the callback has no name or the requested index is out of range.
+        let response = [0x51, 0x02, 5, 0x00, 0x00];
+        assert_eq!(
+            parse_reply(&response),
+            CommandResponse::CallbackName {
+                index: 5,
+                name: None
+            }
+        );
+    }
+
+    #[test]
+    fn parse_reply_ack_set_os_applied() {
+        // SET_OS (cmd 0x03) ack: [0x51][0x03][ack]; ack == 1 ⇒ ok: true.
+        let response = [0x51, 0x03, 1];
+        assert_eq!(parse_reply(&response), CommandResponse::Ack { ok: true });
+    }
+
+    #[test]
+    fn parse_reply_ack_apply_host_context_rejected() {
+        // APPLY_HOST_CONTEXT (cmd 0x05) ack: [0x51][0x05][ack]; ack == 0 ⇒ ok: false.
+        // Shares the CMD_SET_OS | CMD_APPLY_HOST_CONTEXT arm with the test above.
+        let response = [0x51, 0x05, 0];
+        assert_eq!(parse_reply(&response), CommandResponse::Ack { ok: false });
     }
 }
