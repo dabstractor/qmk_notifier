@@ -1,0 +1,14 @@
+h1.0 Bug Fix Requirements
+ h2.0 Overview
+ h2.1 Critical Issues (Must Fix)
+  h3.0 Issue 1: Multi-report reply capture returns the wrong CommandResponse (captures an intermediate reply, discards the real result)
+ h2.2 Major Issues (Should Fix)
+  h3.1 Issue 2: parse_cli_args() returns CliArgs, not the PRD-documented RunParameters
+  h3.2 Issue 3: Nondeterministic CommandResponse across rapid sequential sends (no pre-send IN-buffer drain)
+ h2.3 Minor Issues (Nice to Fix)
+  h3.3 Issue 4: unsafe block in main.rs contradicts the literal PRD §12 "No unsafe" NFR
+  h3.4 Issue 5: --create-config exposes an undocumented -c short flag
+ h2.4 Testing Summary
+  h3.5 Key invariants re-checked (PRD §14)
+---
+code:4 para:21 list:4
