@@ -4,28 +4,28 @@
       "type": "Phase",
       "id": "P1",
       "title": "v0.3.0 Typed-Command Transport",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Upgrade the qmk_notifier crate from v0.2.1 (legacy string-send only, replies discarded) to v0.3.0 (typed-command transport + reply parsing). This is the complete delta described in PRD.md §3 and §10: new RunCommand variants (QueryInfo, QueryCallback, SetOs, ApplyHostContext), HostOs enum, CommandResponse enum, typed-command framing [0x81][0x9F][0xF0][cmd][args][0x03], reply parsing (0x51 typed vs 0/1 legacy vs timeout), evolved burst_to_one/send_raw_report to capture replies, run() returns CommandResponse, dependency cleanup, version bump, and documentation sync.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Type Contracts & Framing Constants",
-          "status": "Planned",
+          "status": "Complete",
           "description": "Establish the foundational type contracts that all downstream work depends on: HostOs enum, extended RunCommand with typed variants, CommandResponse enum, typed-command wire constants, and the run() signature change to return CommandResponse. After this milestone the crate compiles with all new types in place, run() returns CommandResponse (with placeholder/stub logic for typed commands), and existing tests are updated to match the new return type.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Add typed-command public API types to lib.rs",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Add the HostOs enum, extend RunCommand with typed variants, and add the CommandResponse enum. These are the public API surface types defined in PRD §3.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T1.S1",
                   "title": "Add HostOs enum to lib.rs",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md — the os_variant_t values are 0=UNSURE, 1=LINUX, 2=WINDOWS, 3=MACOS, 4=IOS. See also notifier.h NOTIFY_CMD_SET_OS. The HostOs enum mirrors QMK's os_variant_t exactly.\n2. INPUT: No dependencies. This is a new standalone type in src/lib.rs.\n3. LOGIC: Add to src/lib.rs (after the existing RunCommand enum definition). Implement:\n   ```rust\n   /// Host operating system, mirrors QMK's `os_variant_t`.\n   /// Sent via SET_OS (cmd 0x03) to declare the host OS at connect.\n   #[repr(u8)]\n   #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n   pub enum HostOs {\n       Unsure = 0,\n       Linux = 1,\n       Windows = 2,\n       Macos = 3,\n       Ios = 4,\n   }\n   ```\n   The `#[repr(u8)]` is critical — `as u8` cast produces the wire byte. Add a unit test asserting each discriminant value matches the firmware contract.\n4. OUTPUT: A public `HostOs` type in lib.rs, consumable by RunCommand::SetOs variant (next subtask) and build_command_data (P1.M2.T1).\n5. DOCS: [Mode A] Add JSDoc-style doc comments on the enum and each variant (shown above). No separate docs file needed — this is an internal type addition with no config/API surface change beyond the type itself.",
@@ -299,7 +299,7 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "CLI, Cleanup & Documentation",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Add optional diagnostic CLI subcommands, clean up unused dependencies, bump version to 0.3.0, and sync all changeset-level documentation (README.md, cross-doc consistency).",
           "tasks": [
             {
@@ -355,7 +355,7 @@
               "type": "Task",
               "id": "P1.M4.T3",
               "title": "Sync changeset-level documentation",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Final cross-cutting documentation task. Updates README.md and any overview docs to reflect the complete v0.3.0 delta: new typed-command API, CommandResponse return type, CLI subcommands, and version. This task depends on ALL implementing subtasks and runs last.",
               "subtasks": [
                 {
@@ -386,7 +386,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T3.S2",
                   "title": "Final cross-document consistency verification",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M4.T3.S1"
