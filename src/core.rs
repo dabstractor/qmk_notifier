@@ -1599,4 +1599,91 @@ mod tests {
             "must write exactly 1 report for a single-report payload"
         );
     }
+
+    #[test]
+    fn burst_to_one_drains_stale_replies_before_send() {
+        // Issue-3 regression: a stale reply left in the IN buffer by a PRIOR send
+        // must be drained BEFORE this send's write(), so the capture loop reads only
+        // THIS send's fresh reply. FakeHid models stale IN-buffer data with its
+        // pre_write_replies queue (served by read_timeout while the `written` latch
+        // is false, i.e. before any write()). The pre-send drain pops that queue; if
+        // it did not, the stale reply would linger. (See architecture/reply_capture_
+        // design.md §Test: Pre-Send Drain.)
+        let fake = FakeHid::new();
+        // Stale IN-buffer reply from a previous send (all-zero report: [0]==0).
+        fake.push_pre(vec![0u8; 33]);
+        // The FRESH reply to THIS send's single report: match-bool == 1.
+        fake.push_post({
+            let mut r = vec![0u8; 33];
+            r[0] = 1;
+            r
+        });
+
+        let payload = vec![0x41u8; 10]; // 10 bytes => 1 report (PAYLOAD_PER_REPORT = 30)
+        let batch_count = batches_for(&payload);
+        assert_eq!(batch_count, 1, "10-byte payload must fit in 1 report");
+
+        let (success, reply) = burst_to_one(&fake, &payload, batch_count, false);
+        assert!(
+            success,
+            "write path must succeed (FakeHid::write returns Ok)"
+        );
+        let reply = reply.expect("must capture the fresh reply, not time out");
+
+        // (a) Contract assertion (item clause 3): the captured reply is the FRESH
+        //     one, whose [0]==1 — NOT the stale [0].
+        assert_eq!(
+            reply[0], 1,
+            "must capture the fresh reply ([0]==1), not the stale reply ([0]==0)"
+        );
+
+        // (b) DECISIVE assertion: the pre-send drain must have CONSUMED the stale
+        //     reply before write() flipped the read queue to post_write_replies.
+        //     See the ⚠️ CRITICAL note in the PRP for why (a) alone is a
+        //     false-passing test: FakeHid switches read queues on write(), so
+        //     without the drain the stale reply would simply sit unread in
+        //     pre_write_replies and reply[0] would STILL be 1. This is_empty()
+        //     check is what makes the test fail if the drain block is removed —
+        //     i.e. a genuine regression test.
+        assert!(
+            fake.pre_write_replies.borrow().is_empty(),
+            "the pre-send drain must consume the stale reply before write() flips the read queue"
+        );
+        assert_eq!(
+            fake.writes.borrow().len(),
+            1,
+            "must write exactly 1 report for a single-report payload"
+        );
+    }
+
+    #[test]
+    fn burst_to_one_empty_in_buffer_is_clean() {
+        // Issue-3 clean-path baseline: when there is NO stale IN-buffer data, the
+        // pre-send drain is a no-op (reads Ok(0), breaks after one iteration) and
+        // normal reply capture is undisturbed. This is the common case on the hot
+        // path (a quiet device has nothing to drain), so the drain must not stall,
+        // consume the fresh reply, or otherwise perturb capture. Pairs with
+        // burst_to_one_drains_stale_replies_before_send to cover both halves of
+        // the drain's contract.
+        let fake = FakeHid::new();
+        // pre_write_replies deliberately LEFT EMPTY (no stale data).
+        fake.push_post({
+            let mut r = vec![0u8; 33];
+            r[0] = 1;
+            r
+        }); // the fresh (only) reply
+
+        let payload = vec![0x41u8; 10]; // 1 report
+        let batch_count = batches_for(&payload);
+        assert_eq!(batch_count, 1);
+
+        let (success, reply) = burst_to_one(&fake, &payload, batch_count, false);
+        assert!(success, "write path must succeed");
+        let reply = reply.expect("must capture the single fresh reply");
+        assert_eq!(
+            reply[0], 1,
+            "the fresh reply must be captured intact (drain must not steal it)"
+        );
+        assert_eq!(fake.writes.borrow().len(), 1, "must write exactly 1 report");
+    }
 }
