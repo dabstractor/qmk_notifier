@@ -619,13 +619,82 @@ void notifier_set_os(os_variant_t os) {
     apply_os_change(os);
 }
 
-/* STUB — real handle_typed_command lands in P1.M2.T2 (typed response builder +
- * the four handlers). Present here so hid_notify's typed branch links. The real
- * version owns the [0x51] typed response (§4.6) and routes cmd_id to
- * QUERY_INFO/QUERY_CALLBACK/SET_OS/APPLY_HOST_CONTEXT. */
-static bool handle_typed_command(char *buf) {
-    (void)buf;
-    return false;
+/* send_typed_response (§4.6) — Always sends exactly 32 bytes (RAW_REPORT_SIZE)
+ * with the 0x51 NOTIFY_RESPONSE_MARKER in byte 0 (distinct from the legacy 0/1
+ * match-bool ack, §4.6), the cmd_id echo in byte 1, the payload in bytes [2..],
+ * and zero-padding the remainder. payload_len is capped at RAW_REPORT_SIZE-2 (30)
+ * so a too-large payload can never overflow the 32-byte report. Called by every
+ * handle_typed_command branch, so every typed command elicits exactly one reply. */
+static void send_typed_response(uint8_t cmd_id, const uint8_t *payload, uint8_t payload_len) {
+    uint8_t response[RAW_REPORT_SIZE] = {0};   /* zero-pads the unused tail */
+    response[0] = NOTIFY_RESPONSE_MARKER;      /* 0x51 */
+    response[1] = cmd_id;                      /* echo */
+    if (payload != NULL && payload_len > 0) {
+        uint8_t cap = (uint8_t)(RAW_REPORT_SIZE - 2);   /* 30 bytes available after [0x51][cmd_id] */
+        uint8_t n = (payload_len < cap) ? payload_len : cap;
+        memcpy(response + 2, payload, n);
+    }
+    raw_hid_send(response, RAW_REPORT_SIZE);
+}
+
+/* handle_typed_command (§4.6) — dispatches a reassembled typed command. msg_buffer
+ * layout (magic header already stripped by hid_notify): data[0]==0xF0 discriminator,
+ * data[1]==cmd_id, data[2..]==args. Switches on (uint8_t)data[1]; each case builds
+ * its response payload and calls send_typed_response, then returns true (the typed
+ * path always replies — it sent a [0x51] response). hid_notify sets typed_dispatched
+ * so the legacy 0/1 ack is suppressed. Bypasses process_full_message => no board
+ * disable/deactivate side effects (§4.6, invariant 21).
+ *
+ * QUERY_INFO (0x01) and QUERY_CALLBACK (0x02) are implemented here. SET_OS (0x03)
+ * and APPLY_HOST_CONTEXT (0x05) land in P1.M2.T2.S2/S3; until then they fall through
+ * to the default ([0x51][cmd_id] no payload) — a safe placeholder. */
+static bool handle_typed_command(char *data) {
+    uint8_t cmd_id = (uint8_t)data[1];
+
+    switch (cmd_id) {
+        /* QUERY_INFO (0x01) — capability handshake (§4.6). The host sends this once
+         * per board boot to detect a typed-command-capable firmware. Reply payload:
+         * [proto_ver][feature_flags][callback_count][board_rules_present]. */
+        case NOTIFY_CMD_QUERY_INFO: {
+            has_been_queried = true;   /* §4.6 handshake-timing: set on first QUERY_INFO service */
+            uint8_t payload[4];
+            payload[0] = NOTIFY_PROTO_VER;   /* 2 = typed-command capable (firmware-owned, §4.6) */
+            payload[1] = NOTIFY_FEATURE_APPLY_HOST_CONTEXT
+                       | (get_host_callbacks_size() > 0 ? NOTIFY_FEATURE_CALLBACK_REGISTRY : 0);
+            payload[2] = (uint8_t)get_host_callbacks_size();          /* 0 when no DEFINE_HOST_CALLBACKS */
+            payload[3] = board_rules_present() ? 1 : 0;               /* single bit (§4.6) */
+            send_typed_response(NOTIFY_CMD_QUERY_INFO, payload, 4);
+            break;
+        }
+        /* QUERY_CALLBACK (0x02) — name discovery (§4.6). args[0]=index. The host
+         * sweeps i in 0..count to build name->id. Reply: [index][name bytes, NUL-
+         * padded] for a valid index; [index][0x00] (name absent) for out-of-range. */
+        case NOTIFY_CMD_QUERY_CALLBACK: {
+            uint8_t index = (uint8_t)data[2];
+            size_t cb_size = get_host_callbacks_size();
+            host_callback_t *cbs = get_host_callbacks();
+            if (cbs != NULL && index < cb_size && cbs[index].name != NULL) {
+                uint8_t payload[30];               /* [index] + up to 29 name bytes (fits the 30-byte response tail) */
+                payload[0] = index;
+                const char *name = cbs[index].name;
+                uint8_t n = 0;
+                while (n < 29 && name[n] != '\0') { payload[1 + n] = (uint8_t)name[n]; n++; }
+                send_typed_response(NOTIFY_CMD_QUERY_CALLBACK, payload, (uint8_t)(1 + n));
+            } else {
+                uint8_t payload[2] = { index, 0x00 };   /* name absent (§4.6) */
+                send_typed_response(NOTIFY_CMD_QUERY_CALLBACK, payload, 2);
+            }
+            break;
+        }
+        /* Default / unknown cmd_id (incl 0x04 reserved for VIA-coexist, and 0x03/0x05
+         * until P1.M2.T2.S2/S3 land): reply with just [0x51][cmd_id] (no payload) so
+         * the host always gets a typed response and never crashes on an unknown command. */
+        default: {
+            send_typed_response(cmd_id, NULL, 0);
+            break;
+        }
+    }
+    return true;   /* typed path always succeeds — it sent a [0x51] response */
 }
 
 void hid_notify(uint8_t *data, uint8_t length) {
