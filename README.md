@@ -9,6 +9,11 @@ QMK-Notifier is a powerful QMK module that enables dynamic keymap switching base
 - Execute custom callback functions when applications are focused/unfocused
 - Efficient implementation with minimal resource usage
 - Handles strings longer than the 32-byte HID packet limit
+- **Optional per-OS maps** — define OS-specific rules (macOS, Windows,
+  Linux) that take precedence over the default map, so an app reported with
+  different `application_class` strings on different OSes just works.
+  Strictly opt-in: a keymap that defines only the default maps behaves
+  exactly as before. See [Multi-OS Configuration](#multi-os-configuration).
 
 ## How It Works
 
@@ -58,12 +63,22 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
 }
 ```
 
+Multi-OS users also override `process_detected_host_os_kb` to push the detected
+OS into the module — see [Multi-OS Configuration](#multi-os-configuration) for
+the one-line wiring.
+
 ### 3. Update your rules.mk
 
 Add the following line to your keymap's `rules.mk` file:
 
 ```
 include keyboards/handwired/[manufacturer]/[keyboard_name]/qmk-notifier/rules.mk
+```
+
+```make
+# Optional — Multi-OS support only (single-OS users skip this).
+# Enables QMK's OS detection so the keyboard can select per-OS maps.
+OS_DETECTION_ENABLE = yes
 ```
 
 ## Usage
@@ -123,6 +138,138 @@ matches both the window class and the title, joined by the `GS_DELIMITER`
 (`\x1D`). A bare pattern (no `WT`) matches the **class part only** of the
 incoming message — e.g. `neovide` does not match the title `main.rs`.
 
+
+## Multi-OS Configuration
+
+Multi-OS support is an **opt-in overlay**: a keymap that defines only the default
+`DEFINE_SERIAL_*` maps behaves **exactly as before** — multi-OS adds per-OS maps
+*on top of* the defaults, never instead of them. You opt in by (1) enabling QMK's
+OS detection, (2) pushing the detected OS into the module, and (3) defining
+per-OS maps. Single-OS users skip all three and observe zero change.
+
+### How to enable
+
+1. In your keymap's `rules.mk`, enable QMK's OS-detection feature:
+
+   ```make
+   OS_DETECTION_ENABLE = yes
+   ```
+
+2. In `keymap.c`, push the detected OS into the module by overriding
+   `process_detected_host_os_kb`. This is the **one** required call:
+
+   ```c
+   #include QMK_KEYBOARD_H
+   #include "./qmk-notifier/notifier.h"
+
+   void raw_hid_receive(uint8_t *data, uint8_t length) {
+       hid_notify(data, length);
+       /* other Raw HID modules can be called here too */
+   }
+
+   /* Multi-OS only: the sole required call to feed the detected OS in. */
+   bool process_detected_host_os_kb(os_variant_t os) {
+       notifier_set_os(os);          /* enables DEFINE_*_OS map selection */
+       /* …your existing OS-specific logic (e.g. enable_vim_for_mac())… */
+       return true;
+   }
+   ```
+
+### Defining per-OS maps
+
+Use `DEFINE_SERIAL_COMMANDS_OS(os, { ... })` and
+`DEFINE_SERIAL_LAYERS_OS(os, { ... })` to define maps that apply only when the
+detected OS matches. `os` is an `os_variant_t` enumerator token — `OS_LINUX`,
+`OS_WINDOWS`, `OS_MACOS`, or `OS_IOS` (not a string, and not `OS_UNSURE`, which
+has no per-OS map by design). Any subset of OSes × {commands, layers} may be
+defined; the rest fall back to the defaults.
+
+Rules shared across all OSes stay in the **default** `DEFINE_SERIAL_*` maps:
+
+```c
+/* Default maps: OS-AGNOSTIC rules live here (gaming, calculator, …). */
+DEFINE_SERIAL_COMMANDS({
+    { WT("steam_app*", "*"), &disable_vim },
+    { "cs2", "Counter-Strike 2"}, &disable_vim },
+});
+DEFINE_SERIAL_LAYERS({
+    { "*calculator", _NUMPAD },
+    { "blender", _BLENDER },
+    { "steam_app*", _GAMING },
+});
+
+/* macOS-specific: same conceptual apps report different class strings
+ * (Terminal/iTerm, "Google Chrome"). Scanned FIRST when the OS is macOS;
+ * a match here prevents the default map for that track from running. */
+DEFINE_SERIAL_COMMANDS_OS(OS_MACOS, {
+    { "iTerm", &disable_vim },
+    { "Terminal", &disable_vim },
+    { WT("Google Chrome", "*claude*"), &vim_lazy_insert, &disable_vim },
+});
+DEFINE_SERIAL_LAYERS_OS(OS_MACOS, {
+    { "iTerm", _TERMINAL },
+    { "Terminal", _TERMINAL },
+    { WT("Google Chrome", "*"), _BROWSER },
+});
+
+/* Linux-specific (Hyprland/X11 class names). */
+DEFINE_SERIAL_LAYERS_OS(OS_LINUX, {
+    { "*alacritty*", _TERMINAL },
+    { "*kitty*", _TERMINAL },
+    { "firefox", _BROWSER },
+});
+```
+
+### How matching works (per-OS, then default)
+
+For **each** map type (commands and layers), independently:
+
+1. The **OS-specific map** for the currently-detected OS is scanned **first**
+   (first-match-wins, in definition order).
+2. If it matches, that match wins and the **default map for that track is not
+   consulted**.
+3. If there is no OS-specific map for the current OS, or one exists but matches
+   nothing, the **default** map is scanned (first-match-wins).
+
+The two tracks decide **independently** — a single window may take its layer from
+the OS map and its command from the default map, or vice versa. Until the OS is
+detected (or on a board that does not enable `OS_DETECTION_ENABLE`), the module
+behaves as `OS_UNSURE` and uses the **default maps only** — identical to the
+pre-multi-OS firmware.
+
+When the detected OS **changes**, the module clears any active layer/command
+chosen under the previous OS before recording the new one (so nothing from the
+old OS's maps persists). Repeated detection of the *same* OS is a no-op (no
+flapping). The next focus-change message from the host re-establishes state under
+the new maps.
+
+### Backward compatibility (the guarantee)
+
+If you define **only** the default `DEFINE_SERIAL_*` maps — no `DEFINE_*_OS`
+macros, and no `notifier_set_os` call — the module behaves **byte-for-byte
+identically** to the pre-multi-OS firmware. Multi-OS is strictly additive: the
+per-OS maps simply do not exist, so every dispatch uses the defaults exactly as
+before. You cannot break an existing keymap by *not* opting in.
+
+### Push-only by design
+
+The module **never** calls QMK's `detected_host_os()` itself. The OS is *pushed*
+in by your keymap via `notifier_set_os(os)` (conventionally from
+`process_detected_host_os_kb`). This means the module carries no link dependency
+on the OS-detection subsystem — it only consumes the `os_variant_t` *type*.
+
+### What this does NOT change
+
+- **The wire protocol is unchanged.** No OS byte is sent; the companion app still
+  sends `class\x1Dtitle` as 32-byte Raw HID reports with the `0x81 0x9F` magic
+  header and `ETX` terminator.
+- **The pattern matcher is untouched.** Multi-OS only selects *which* map is
+  scanned; the matching engine (`pattern_match`) is identical.
+- **Host-provided OS and host-side rules are planned future work**, not
+  implemented. Today the OS comes only from QMK's firmware-side `OS_DETECTION`,
+  pushed in by the keymap. A future version may let the host declare its OS
+  (authoritatively) and/or ship rules from the desktop — both are out of scope
+  here.
 
 ## Companion Projects
 
@@ -196,10 +343,17 @@ A second, separate gate validates the **receiver/dispatcher** side of the module
 ./run_notifier_stub_tests.sh
 ```
 
-This stub-compiles `notifier.c` against the minimal `qmk_stubs/` and runs
-`test_notifier_dispatch.c` (11 cases covering F4 delimiter matching, dispatcher
-ordering, `hid_notify` reassembly, sanitization, acknowledgement, and NULL
-safety).
+This stub-compiles `notifier.c` once against the minimal `qmk_stubs/`, links it
+into **two** host test binaries, and runs both:
+
+- **`test_notifier_dispatch`** (11 cases) — F4 delimiter matching, dispatcher
+  ordering, `hid_notify` reassembly, sanitization, acknowledgement, and NULL
+  safety (the backward-compat canary).
+- **`test_notifier_os`** (31 cases) — the multi-OS map-selection (F8) and
+  OS-change-clearing (F9) contract: OS-specific maps win over defaults per track,
+  default fallback when an OS map is absent/matches nothing/`OS_UNSURE`,
+  independent command vs layer tracks, and `notifier_set_os` idempotence +
+  clear-on-change.
 
 ### Current Test Status
 
@@ -212,7 +366,10 @@ The pattern matching library implements a full regex construct set:
 - `+` - One-or-more quantifier (linear-time, no backtracking)
 - `*`, `^`, `$` - Wildcard, start anchor, end anchor
 
-**Overall Test Results**: 2019/2019 tests passing (100% success rate, 0 failures)
+**Overall Test Results**: all suites green with 0 failures:
+- Pattern-match corpus (`./run_all_tests.sh`, 9 suites): **2019/2019** tests passing.
+- Notifier stub gate (`./run_notifier_stub_tests.sh`): `test_notifier_dispatch`
+  **11/11** + `test_notifier_os` **31/31** cases passing.
 **Performance Impact**: Negligible (~0.1 microseconds per `pattern_match` call)
 
 All original functionality works identically (no breaking changes), and
