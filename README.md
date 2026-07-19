@@ -327,7 +327,7 @@ This builds and runs the 9 pattern-matcher suites (all linking `pattern_match.c`
 
 | Suite | Count | Covers |
 |---|---|---|
-| `test_pattern_match` | 376 | anchors, escapes, wildcards, case sensitivity, parsing, edge cases, metachars |
+| `test_pattern_match` | 380 | anchors, escapes, wildcards, case sensitivity, parsing, edge cases, metachars, @-literal regression guards |
 | `test_char_classification` | 179 | `\d \D \w \W \s \S` classification (indirect via metachars) |
 | `test_word_boundary_basic` | 74 | `\b` / `\B` boundary semantics |
 | `test_word_boundary_integration` | 189 | `\b` / `\B` integrated with anchors/wildcards/classes |
@@ -346,7 +346,7 @@ A second, separate gate validates the **receiver/dispatcher** side of the module
 This stub-compiles `notifier.c` once against the minimal `qmk_stubs/`, links it
 into **two** host test binaries, and runs both:
 
-- **`test_notifier_dispatch`** (11 cases) — F4 delimiter matching, dispatcher
+- **`test_notifier_dispatch`** (14 cases) — F4 delimiter matching, dispatcher
   ordering, `hid_notify` reassembly, sanitization, acknowledgement, and NULL
   safety (the backward-compat canary).
 - **`test_notifier_os`** (31 cases) — the multi-OS map-selection (F8) and
@@ -367,9 +367,9 @@ The pattern matching library implements a full regex construct set:
 - `*`, `^`, `$` - Wildcard, start anchor, end anchor
 
 **Overall Test Results**: all suites green with 0 failures:
-- Pattern-match corpus (`./run_all_tests.sh`, 9 suites): **2019/2019** tests passing.
+- Pattern-match corpus (`./run_all_tests.sh`, 9 suites): **2023/2023** tests passing.
 - Notifier stub gate (`./run_notifier_stub_tests.sh`): `test_notifier_dispatch`
-  **11/11** + `test_notifier_os` **31/31** cases passing.
+  **14/14** + `test_notifier_os` **31/31** cases passing.
 **Performance Impact**: Negligible (~0.1 microseconds per `pattern_match` call)
 
 All original functionality works identically (no breaking changes), and
