@@ -20,6 +20,10 @@
  * Siblings P1.M3.T1.S3 (SET_OS + APPLY_HOST_CONTEXT) and S3.T1.S4 (coexistence +
  * multi-report) APPEND blocks to this file; this task seeds the scaffolding.
  *
+ * P1.M1.T2.S1 (bugfix Issue 1) appends the ADVERSARIAL typed-command
+ * section (adv-A..adv-D): malformed/truncated/abandoned AHC must not
+ * permanently break legacy routing (and typed recovers after a flush).
+ *
  * Build (PRD §11.1):
  *   gcc -DQMK_KEYBOARD_H='"qmk_keyboard_stub.h"' -Iqmk_stubs -I. \
  *       notifier.c qmk_stubs/qmk_stubs.c test_notifier_host.c -std=c99
@@ -402,6 +406,107 @@ int main(void) {
         CK(r[2] == 1,                                    "(multi-rep) two-report AHC r[2]=ack=1 [§4.6]");
         CK(stub_get_active_layer() == 224,               "(multi-rep) two-report AHC host layer 224 active (set_host_layer ran) [§4.6]");
         CK(cb_mute_en == 1,                              "(multi-rep) two-report AHC callback diff ran (id 0 enabled once) [§4.6]");
+    }
+
+    /* ================================================================ */
+    /* ===== P1.M1.T2.S1 — ADVERSARIAL typed-command framing ============ */
+    /* ================================================================ */
+    /* Issue 1 (Major): a malformed/truncated/abandoned typed command must NOT
+     * permanently break legacy layer/command routing. The watchdog
+     * (typed_awaiting_terminator, notifier.c) bounds the damage. Recovery per
+     * PRD §1.3/§12 ("robust to garbage") and §2 F9.4 (KVM/USB-switch).
+     *
+     * Behavior envelope (verified): the watchdog restores LEGACY routing
+     * immediately (adv-A/adv-B). Typed-command recovery needs a legacy ETX
+     * flush first (adv-C/adv-D) — the malformed frame leaves msg_index
+     * non-zero, so the immediate-next typed 0xF0 is not recognized until a
+     * legacy dispatch resets msg_index. This matches Issue 1's requirement. */
+
+    /* ===== (adv-A) MALFORMED AHC count/ids mismatch — legacy recovers (Issue 1 repro) ===== */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        /* malformed AHC: count=5 but only ONE id byte, then ETX (Issue 1 repro) */
+        uint8_t r[32]; memset(r, 0, sizeof(r));
+        r[0]=0x81; r[1]=0x9F; r[2]=NOTIFY_CMD_DISCRIMINATOR; r[3]=NOTIFY_CMD_APPLY_HOST_CONTEXT;
+        r[4]=224; r[5]=0x00; r[6]=5; r[7]=0x41; r[8]=ETX_TERMINATOR[0];
+        hid_notify(r, 32);
+        const uint8_t *ra = stub_get_last_response();
+        CK(ra[0] != NOTIFY_RESPONSE_MARKER, "(adv-A) malformed AHC NOT typed-dispatched (r[0]!=0x51) [Issue 1/§4.6]");
+
+        /* the very next legacy focus-change string MUST dispatch normally */
+        uint8_t s[32]; memset(s, 0, sizeof(s));
+        s[0]=0x81; s[1]=0x9F;
+        s[2]='n'; s[3]='e'; s[4]='o'; s[5]='v'; s[6]='i'; s[7]='d'; s[8]='e';
+        s[9]=ETX_TERMINATOR[0];
+        hid_notify(s, 32);
+        const uint8_t *rs = stub_get_last_response();
+        CK(rs[0] == 1,                      "(adv-A) legacy 'neovide' recovers: ack=1 after malformed AHC [Issue 1/§1.3]");
+        CK(rs[0] != NOTIFY_RESPONSE_MARKER, "(adv-A) legacy NOT misrouted to typed path (r[0]!=0x51) [Issue 1]");
+        CK(board_cmd_en == 1,               "(adv-A) legacy dispatch fired board on_enable (routing recovered) [Issue 1/§12]");
+        CK(stub_get_active_layer() == 5,    "(adv-A) legacy dispatch activated board layer 5 [Issue 1/§12]");
+    }
+
+    /* ===== (adv-B) TRUNCATED AHC (no ETX) — legacy recovers ===== */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        /* truncated AHC: header + 1 id, NO ETX in a full 32-byte report (abandoned) */
+        uint8_t r[32]; memset(r, 0, sizeof(r));
+        r[0]=0x81; r[1]=0x9F; r[2]=NOTIFY_CMD_DISCRIMINATOR; r[3]=NOTIFY_CMD_APPLY_HOST_CONTEXT;
+        r[4]=225; r[5]=0x00; r[6]=5; r[7]=0x42;   /* NO ETX */
+        hid_notify(r, 32);
+        const uint8_t *ra = stub_get_last_response();
+        CK(ra[0] != NOTIFY_RESPONSE_MARKER, "(adv-B) truncated AHC NOT typed-dispatched (r[0]!=0x51) [Issue 1/§4.6]");
+
+        uint8_t s[32]; memset(s, 0, sizeof(s));
+        s[0]=0x81; s[1]=0x9F;
+        s[2]='n'; s[3]='e'; s[4]='o'; s[5]='v'; s[6]='i'; s[7]='d'; s[8]='e';
+        s[9]=ETX_TERMINATOR[0];
+        hid_notify(s, 32);
+        const uint8_t *rs = stub_get_last_response();
+        CK(rs[0] == 1,                      "(adv-B) legacy 'neovide' recovers after truncated AHC [Issue 1/§1.3]");
+        CK(board_cmd_en == 1,               "(adv-B) legacy dispatch fired board on_enable [Issue 1/§12]");
+    }
+
+    /* ===== (adv-C) RECOVERY: typed commands work after a legacy flush =====
+     * The malformed frame leaves msg_index non-zero, so the IMMEDIATE next typed
+     * command is not seen (watchdog residual). After a legacy dispatch flushes
+     * the buffer (its ETX resets msg_index), typed commands fully recover. */
+    {
+        uint8_t r[32]; memset(r, 0, sizeof(r));
+        r[0]=0x81; r[1]=0x9F; r[2]=NOTIFY_CMD_DISCRIMINATOR; r[3]=NOTIFY_CMD_APPLY_HOST_CONTEXT;
+        r[4]=226; r[5]=0x00; r[6]=5; r[7]=0x43; r[8]=ETX_TERMINATOR[0];
+        hid_notify(r, 32);
+        /* legacy flush: "neovide" + ETX dispatches and resets msg_index to 0 */
+        uint8_t s[32]; memset(s, 0, sizeof(s));
+        s[0]=0x81; s[1]=0x9F;
+        s[2]='n'; s[3]='e'; s[4]='o'; s[5]='v'; s[6]='i'; s[7]='d'; s[8]='e';
+        s[9]=ETX_TERMINATOR[0];
+        hid_notify(s, 32);
+        /* now a typed QUERY_INFO dispatches normally — typed path recovered */
+        const uint8_t *rq = send_typed(NOTIFY_CMD_QUERY_INFO, NULL, 0);
+        CK(rq[0] == NOTIFY_RESPONSE_MARKER, "(adv-C) post-flush QUERY_INFO r[0]=0x51 (typed recovered) [Issue 1]");
+        CK(rq[1] == NOTIFY_CMD_QUERY_INFO,  "(adv-C) post-flush QUERY_INFO r[1]=0x01 echo [§4.6]");
+        CK(rq[2] == NOTIFY_PROTO_VER,       "(adv-C) post-flush QUERY_INFO r[2]=proto_ver=2 [§4.6]");
+    }
+
+    /* ===== (adv-D) ABANDONED typed msg — well-formed AHC works after a flush ===== */
+    {
+        uint8_t r[32]; memset(r, 0, sizeof(r));
+        r[0]=0x81; r[1]=0x9F; r[2]=NOTIFY_CMD_DISCRIMINATOR; r[3]=NOTIFY_CMD_APPLY_HOST_CONTEXT;
+        r[4]=0; r[5]=0x00; r[6]=5; r[7]=0x44;   /* NO ETX — abandoned */
+        hid_notify(r, 32);
+        uint8_t s[32]; memset(s, 0, sizeof(s));
+        s[0]=0x81; s[1]=0x9F;
+        s[2]='n'; s[3]='e'; s[4]='o'; s[5]='v'; s[6]='i'; s[7]='d'; s[8]='e';
+        s[9]=ETX_TERMINATOR[0];
+        hid_notify(s, 32);
+        /* well-formed AHC (count=0) dispatches — host plane recovered */
+        uint8_t a[] = { 224, 0x00, 0 };          /* layer=224, flags=0 (stack), count=0 */
+        const uint8_t *ra = send_typed(NOTIFY_CMD_APPLY_HOST_CONTEXT, a, 3);
+        CK(ra[0] == NOTIFY_RESPONSE_MARKER,        "(adv-D) post-flush AHC r[0]=0x51 (typed recovered) [Issue 1]");
+        CK(ra[1] == NOTIFY_CMD_APPLY_HOST_CONTEXT,  "(adv-D) post-flush AHC r[1]=0x05 echo [§4.6]");
+        CK(ra[2] == 1,                               "(adv-D) post-flush AHC r[2]=ack=1 applied [§4.6]");
+        CK(stub_get_active_layer() == 224,           "(adv-D) post-flush AHC host layer 224 active [§14]");
     }
 
     printf("\nTotal tests run: %d / passed: %d / failed: %d\n", g_pass + g_fail, g_pass, g_fail);

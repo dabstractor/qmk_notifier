@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Typed Reassembly Robustness (Major Issue 1)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Fix the typed-command reassembly desync where a malformed/truncated APPLY_HOST_CONTEXT (count != actual ids) permanently breaks legacy layer/command routing. Implement a watchdog that detects typed-message abandonment and resets the reassembly state, then add adversarial test coverage proving the fix works and legacy routing resumes after malformed input.",
           "tasks": [
             {
@@ -44,14 +44,14 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Adversarial test coverage for malformed/truncated/abandoned typed commands",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add adversarial test cases to test_notifier_host.c that exercise the typed reassembly watchdog: count/ids mismatches, truncated frames, abandoned multi-report messages, and recovery-after-malformed scenarios. These cases close the gap identified in the PRD where shipped tests only exercise the happy path (count == ids, no 0x03 in payload).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Write adversarial typed-command test cases in test_notifier_host.c (count/ids mismatch, truncated, abandoned, recovery)",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -81,14 +81,14 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Fix stale README test results block (Issue 2)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Update README.md lines ~540-545 to accurately reflect that all 64 test_notifier_host cases pass (including the four SET_OS blocks), and that the SET_OS 0x03/ETX collision is resolved by the length-aware typed reassembly already shipping in notifier.c.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Update README.md Overall Test Results block to reflect 64/64 host cases passing",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_16d737de7a3e/bugfix/001_9bb28e448bd3/architecture/system_context.md. The README.md 'Overall Test Results' block at lines ~536-548 currently states 'the four SET_OS blocks are currently pending an upstream ETX-collision framing fix in notifier.c' and 'the remaining 57 assertions pass'. This is stale: run_notifier_stub_tests.sh reports 'Total tests run: 64 / passed: 64 / failed: 0'. The length-aware typed reassembly (typed_literal_remaining) already ships and resolves the 0x03/ETX collision. The README also has a 'test_notifier_host (64 cases)' description at lines ~516-522 that lists the test coverage accurately (including SET_OS) — only the results block is wrong.\n2. INPUT: README.md current content at lines ~536-548. The verified test result: 64/64 passing (from run_notifier_stub_tests.sh).\n3. LOGIC: Implement per PRD §11 acceptance gate and Issue 2 (h3.1). Replace the stale block (lines ~540-545) that says SET_OS is pending a fix with accurate text stating all 64 test_notifier_host cases pass, including the four SET_OS blocks, and that the SET_OS cmd_id 0x03 / ETX terminator collision is resolved by the length-aware typed reassembly in notifier.c. Do NOT change the test coverage description at lines ~516-522 (it is already accurate). Do NOT change the pattern-match corpus results (2023/2023) or dispatch/os results (14/14, 31/31) — those are correct.\n4. OUTPUT: Updated README.md where the Overall Test Results block accurately shows test_notifier_host: 64/64 cases passing, no pending fixes. A reader will correctly understand SET_OS is functional.\n5. DOCS: This IS the documentation fix — no separate docs subtask needed.",
