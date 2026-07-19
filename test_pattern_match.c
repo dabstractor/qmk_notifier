@@ -558,6 +558,14 @@ static void test_metacharacters_with_anchors() {
         {"\\db$", "5b", true, true, "Mixed metachar + literal with end anchor"},
         {"\\db$", "b5", true, false, "Mixed metachar + literal with end anchor: wrong order"},
         {"^x\\sy$", "x y", true, true, "Mixed literal + metachar + literal with full anchor"},
+        
+        // @-literal regression guard (Issue 1): @ is an ordinary literal byte (§7.1/§7.7);
+        // \w = [A-Za-z0-9_] does NOT include @ (§15). Lock in the CORRECT semantics so a
+        // future "rebuild to spec" cannot regress toward the old wrong §11.2C expectation.
+        {"^\\w+@\\w+$", "user@host", true, true,  "REG: ^\\w+@\\w+$ matches user@host (literal @ between word groups)"},
+        {"^\\w+@\\w+$", "user_host", true, false, "REG: ^\\w+@\\w+$ does NOT match user_host (no @; _ is \\w)"},
+        {"^\\w+_\\w+$", "user_host", true, true,  "REG: ^\\w+_\\w+$ matches user_host (literal _ between word groups)"},
+        {"\\w+@\\w+",   "user@host", true, true,  "REG: unanchored \\w+@\\w+ matches (substring)"},
     };
     
     for (int i = 0; i < sizeof(metachar_anchor_tests) / sizeof(metachar_anchor_tests[0]); i++) {
