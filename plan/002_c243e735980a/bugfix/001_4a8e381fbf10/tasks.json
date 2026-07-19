@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Bug Fix Remediation — PRD Validation Findings",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Address three issues identified during end-to-end PRD validation of the qmk-notifier multi-OS delta (session 002_c243e735980a). Issue 1 (Major): add a regression test locking in correct @-literal / \\w-excludes-@ semantics for the PRD §11.2C gate. Issue 2 (Minor): fix sanitize_string to strip NUL bytes by explicit length instead of truncating at them. Issue 3 (Minor): add layer-track match/miss print to the CONSOLE_ENABLE debug block per PRD §8.6 step 9. No critical bugs; core matching/dispatch/reassembly functionality is verified correct and must remain untouched.",
       "milestones": [
         {
@@ -100,21 +100,21 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Issue 3 — CONSOLE_ENABLE Layer Track Debug Print + Changeset-Level Docs Sync",
-          "status": "Planned",
+          "status": "Researching",
           "description": "The #ifdef CONSOLE_ENABLE block at notifier.c:417-434 prints only the command-track match/miss. The PRD §8.6 step 9 says 'print per-track match/miss.' Add a layer-track uprintf mirroring the command track. Then sync changeset-level documentation (README.md test counts, overview) across all three issues.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Add layer-track match/miss print to CONSOLE_ENABLE debug block",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Add a layer-track uprintf to the #ifdef CONSOLE_ENABLE block in process_full_message, after the existing command-track print. Create a minimal qmk_stubs/print.h stub so the code can be compile-checked with -DCONSOLE_ENABLE.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Add layer-track uprintf and create print.h stub for CONSOLE_ENABLE compile-check",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/002_c243e735980a/bugfix/001_4a8e381fbf10/architecture/findings_and_risks.md §Issue 3. The CONSOLE_ENABLE block is at notifier.c:417-434 inside process_full_message. It currently prints only the command track (lines 429-433): match → 'Matched message %s on command: %s' using command_found->pattern; miss → 'Did not match message %s on any command'. The GS→'|' substitution (lines 418-423) already runs on the local received_command buffer before printing. Variables in scope: received_command[256] (local buffer, GS already replaced with '|'), command_found (command_map_t*, NULL if miss), layer_found (uint8_t, LAYER_UNSET=255 if miss). uprintf is declared via #include \"print.h\" (notifier.c:20-21, guarded by #ifdef CONSOLE_ENABLE). The stub harness does NOT provide print.h or uprintf.\n2. INPUT: No data from prior subtasks (Issue 3 is independent of Issues 1 and 2). However, if P1.M2.T1.S1 has been applied, the CONSOLE_ENABLE block line numbers may shift by ~2 lines (sanitize_string grows by adding a parameter). Work from the current file state.\n3. LOGIC:\n   a) In the #ifdef CONSOLE_ENABLE block of process_full_message, AFTER the existing command-track if/else (currently ending at line 433), add a layer-track print:\n        if (layer_found != LAYER_UNSET) {\n            uprintf(\"Matched message %s on layer: %d\\n\", received_command, layer_found);\n        } else {\n            uprintf(\"Did not match message %s on any layer\\n\", received_command);\n        }\n      This mirrors the command-track output format. The layer index is sufficient for debugging (storing a layer_map_t* for the pattern would require dispatch-logic changes not warranted for a Minor debug issue). Both prints are inside the existing #ifdef CONSOLE_ENABLE guard and use the already GS→'|' substituted received_command buffer.\n   b) Create qmk_stubs/print.h — a minimal stub for host compile-checks:\n        #pragma once\n        #include <stdio.h>\n        #define uprintf(...) printf(__VA_ARGS__)\n      This file is ONLY included when building with -DCONSOLE_ENABLE; the stub harness normally builds without it.\n   c) Compile-check: run a one-off gcc build with CONSOLE_ENABLE to verify no errors:\n        gcc -Wall -Wextra -std=c99 -DCONSOLE_ENABLE \\\n            -DQMK_KEYBOARD_H='\"qmk_keyboard_stub.h\"' \\\n            -Iqmk_stubs -I. -c notifier.c -o /tmp/notifier_console_check.o\n      Verify: clean compilation, no new warnings.\n   DO NOT change the command-track print, the GS→'|' substitution loop, or any dispatch logic.\n4. OUTPUT: notifier.c compiles clean both WITHOUT CONSOLE_ENABLE (normal build, run_notifier_stub_tests.sh passes) AND WITH CONSOLE_ENABLE (the one-off compile check above). No behavior change in production (CONSOLE_ENABLE is off in all automated test gates).\n5. DOCS: none — CONSOLE_ENABLE debug output is not a user-facing/config surface change. The print.h stub is test infrastructure, not user-facing.",
@@ -130,14 +130,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Sync changeset-level documentation",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Final documentation sweep across all three bug fixes. Update README.md test count table to reflect new test cases added to test_pattern_match.c (Issue 1) and test_notifier_dispatch.c (Issue 2). Review and update any overview/feature docs that reference test counts, sanitize_string behavior, or CONSOLE_ENABLE debug output.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Update README.md test counts and cross-cutting documentation",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
