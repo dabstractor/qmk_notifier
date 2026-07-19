@@ -15,28 +15,23 @@ pub const REPORT_LENGTH: usize = 32;
 // `plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md` §Constants).
 // `pub(crate)` (not `pub`): internal transport constants, NOT public API.
 //
-// NOTE: each constant carries a temporary `#[allow(dead_code)]`. The consumers
-// land in later subtasks — build_command_data (P1.M2.T1), parse_reply
-// (P1.M2.T2), and burst_to_one's reply capture (P1.M3.T1) — so until then no
-// non-test code references them and rustc would otherwise emit dead_code
-// warnings (verified: even `pub(crate)` items warn, and a `#[cfg(test)]`-only
-// reference does NOT silence them in `cargo build`). REMOVE each allow when its
-// constant gains a real consumer.
+// The 5 command constants (CMD_DISCRIMINATOR, CMD_QUERY_INFO, CMD_QUERY_CALLBACK,
+// CMD_SET_OS, CMD_APPLY_HOST_CONTEXT) now have a real consumer:
+// `build_typed_payload` (P1.M1.T2.S1) references them in compiled code, so they
+// no longer need an `#[allow(dead_code)]` (verified: a const referenced by an
+// allow-dead fn's body does NOT warn). Only RESPONSE_MARKER and
+// REPLY_READ_TIMEOUT_MS still carry `#[allow(dead_code)]` — their consumers land
+// in P1.M1.T3 (parse_reply + the reply reader).
 
 /// Typed-command discriminator: first payload byte after 0x81 0x9F (PRD §10.1).
-#[allow(dead_code)]
 pub(crate) const CMD_DISCRIMINATOR: u8 = 0xF0;
 /// Typed-response marker: response[0] == 0x51 means typed reply (PRD §10.2).
 #[allow(dead_code)]
 pub(crate) const RESPONSE_MARKER: u8 = 0x51;
 /// Command IDs from firmware PRD §4.6 command table.
-#[allow(dead_code)]
 pub(crate) const CMD_QUERY_INFO: u8 = 0x01;
-#[allow(dead_code)]
 pub(crate) const CMD_QUERY_CALLBACK: u8 = 0x02;
-#[allow(dead_code)]
 pub(crate) const CMD_SET_OS: u8 = 0x03;
-#[allow(dead_code)]
 pub(crate) const CMD_APPLY_HOST_CONTEXT: u8 = 0x05;
 /// Bounded timeout (ms) for reading the first reply after a burst.
 /// Must be > 0 (unlike the drain's non-blocking timeout=0).
@@ -307,6 +302,93 @@ fn batches_for(data: &[u8]) -> usize {
     (data.len() + REPORT_LENGTH - 3) / PAYLOAD_PER_REPORT
 }
 
+/// Build the ETX-terminated wire payload for a typed [`crate::RunCommand`],
+/// ready to hand unchanged to [`send_raw_report`].
+///
+/// Returns `[0xF0][cmd_id][args…][0x03]` — the typed discriminator (`0xF0`),
+/// the command-ID byte, command-specific argument bytes, then the `0x03` ETX
+/// terminator. [`send_raw_report`] / [`burst_to_one`] prepend the per-report
+/// `[0x00][0x81][0x9F]` framing, so the firmware-side layout is
+/// `[0x81][0x9F][0xF0][cmd_id][args…][0x03]` — the discriminator lands at
+/// firmware `data[2]` (PRD §8; canonical layout in
+/// `plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md` §Typed-Command
+/// Framing). The returned `Vec` therefore starts with `0xF0`, NOT with
+/// `0x81 0x9F` (that header is added by [`burst_to_one`]).
+///
+/// The payload is chunked by the SAME multi-report path as legacy strings
+/// ([`batches_for`] / [`burst_to_one`], 30 payload bytes/report), so
+/// `APPLY_HOST_CONTEXT` may span reports — its callback-id list is uncapped.
+/// Because the ETX is appended here, the caller passes the `Vec` directly to
+/// [`send_raw_report`] with no further framing.
+///
+/// Per-variant arg layouts (`firmware_wire_contract.md` §Command Table):
+/// - [`crate::RunCommand::QueryInfo`]        (id `0x01`): no args.
+/// - [`crate::RunCommand::QueryCallback`]    (id `0x02`): `[index]`.
+/// - [`crate::RunCommand::SetOs`]            (id `0x03`): `[os_byte]` where
+///   `os_byte = HostOs as u8` (mirrors QMK `os_variant_t`).
+/// - [`crate::RunCommand::ApplyHostContext`] (id `0x05`): `[layer][flags][count][id…]`
+///   — `layer` is the host-layer number or `0xFF` (clear) when `layer == None`;
+///   `flags` bit 0 is `clear_board`; `count` is the callback-id count; `id…`
+///   the full desired enabled set (firmware diffs, disable-before-enable).
+///
+/// Non-typed variants ([`crate::RunCommand::SendMessage`],
+/// [`crate::RunCommand::ListDevices`]) are NOT typed commands and return an
+/// empty `Vec`; the `run()` dispatch routes them through their own paths
+/// (legacy string + ETX; `list_hid_devices`) and never reaches the typed send.
+///
+/// Consumer: the `run()` typed-dispatch arm (P1.M1.T2.S2). Until then this is
+/// referenced only by tests, hence `#[allow(dead_code)]` — remove it in S2
+/// once `run()` calls this.
+#[allow(dead_code)]
+pub(crate) fn build_typed_payload(cmd: &crate::RunCommand) -> Vec<u8> {
+    use crate::RunCommand;
+
+    let mut payload = Vec::new();
+    payload.push(CMD_DISCRIMINATOR);
+
+    match cmd {
+        RunCommand::QueryInfo => {
+            payload.push(CMD_QUERY_INFO);
+        }
+        RunCommand::QueryCallback(index) => {
+            payload.push(CMD_QUERY_CALLBACK);
+            payload.push(*index);
+        }
+        RunCommand::SetOs(os) => {
+            payload.push(CMD_SET_OS);
+            payload.push(*os as u8);
+        }
+        RunCommand::ApplyHostContext {
+            layer,
+            callbacks,
+            clear_board,
+        } => {
+            payload.push(CMD_APPLY_HOST_CONTEXT);
+            // layer: Some(n) ⇒ host-layer number (≥224 by convention);
+            // None ⇒ 0xFF (clear host layer). See firmware_wire_contract.md.
+            payload.push(layer.unwrap_or(0xFF));
+            // flags: bit 0 = clear_board (firmware clears board layer/command
+            // before applying host context). No other bits defined yet.
+            payload.push(if *clear_board { 0x01 } else { 0x00 });
+            // count: u8. Defensive CLAMP at 255 (P1.M2.T1.S2 contract; PRD §10.1
+            // says the transport is uncapped while the firmware registry is
+            // u8-bounded, HOST_CALLBACK_MAX=32). `as u8` alone WRAPS — e.g.
+            // len==256 ⇒ count 0, telling the firmware "zero callbacks" while
+            // 256 id bytes follow ⇒ parse drift. `.min(255)` guarantees the
+            // count byte never lies below the real intent (255 == u8::MAX).
+            payload.push(callbacks.len().min(255) as u8);
+            payload.extend_from_slice(callbacks);
+        }
+        // Not typed commands — caller routes these elsewhere. Return empty so a
+        // misuse is inert rather than a panic (a panic would wedge a misrouted
+        // SendMessage in a live run() path).
+        RunCommand::SendMessage(_) | RunCommand::ListDevices => return Vec::new(),
+    }
+
+    payload.push(0x03); // ETX terminator (signals end-of-message before chunking)
+    payload
+}
+
 /// Match parameters a cached handle set was opened for. The cache is rebuilt
 /// whenever a request uses a different key.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -458,6 +540,7 @@ fn device_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{HostOs, RunCommand};
 
     const DEV_VID: u16 = 0xFEED;
     const DEV_PID: u16 = 0x0000;
@@ -600,6 +683,141 @@ mod tests {
     }
 
     #[test]
+    fn build_typed_payload_query_info() {
+        // QUERY_INFO (0x01): no args. Full payload = discriminator + cmd + ETX.
+        let payload = build_typed_payload(&RunCommand::QueryInfo);
+        assert_eq!(payload, vec![CMD_DISCRIMINATOR, CMD_QUERY_INFO, 0x03]);
+        // Invariants every typed payload must satisfy (also asserted by exact-eq):
+        assert_eq!(
+            *payload.first().unwrap(),
+            CMD_DISCRIMINATOR,
+            "must start with 0xF0"
+        );
+        assert_eq!(*payload.last().unwrap(), 0x03, "must end with ETX");
+    }
+
+    #[test]
+    fn build_typed_payload_query_callback() {
+        // QUERY_CALLBACK (0x02): one arg = the registry index.
+        let payload = build_typed_payload(&RunCommand::QueryCallback(7));
+        assert_eq!(
+            payload,
+            vec![CMD_DISCRIMINATOR, CMD_QUERY_CALLBACK, 7, 0x03]
+        );
+
+        // Boundary: index 0 and 255 must still serialize (u8 range, no truncation).
+        assert_eq!(
+            build_typed_payload(&RunCommand::QueryCallback(0)),
+            vec![CMD_DISCRIMINATOR, CMD_QUERY_CALLBACK, 0, 0x03]
+        );
+        assert_eq!(
+            build_typed_payload(&RunCommand::QueryCallback(u8::MAX)),
+            vec![CMD_DISCRIMINATOR, CMD_QUERY_CALLBACK, u8::MAX, 0x03]
+        );
+    }
+
+    #[test]
+    fn build_typed_payload_set_os() {
+        // os_byte mirrors QMK os_variant_t (firmware_wire_contract.md §SET_OS).
+        for (os, os_byte) in [
+            (HostOs::Unsure, 0u8),
+            (HostOs::Linux, 1u8),
+            (HostOs::Windows, 2u8),
+            (HostOs::Macos, 3u8),
+            (HostOs::Ios, 4u8),
+        ] {
+            let payload = build_typed_payload(&RunCommand::SetOs(os));
+            assert_eq!(
+                payload,
+                vec![CMD_DISCRIMINATOR, CMD_SET_OS, os_byte, 0x03],
+                "SET_OS({os:?}) must serialize to [0xF0][0x03][{os_byte}][ETX]"
+            );
+        }
+    }
+
+    #[test]
+    fn build_typed_payload_apply_host_context_set_layer() {
+        // layer = Some(224) (HOST_LAYER_BASE), 3 callbacks, clear_board set.
+        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+            layer: Some(224),
+            callbacks: vec![10, 20, 30],
+            clear_board: true,
+        });
+        // [0xF0, 0x05, layer=224, flags=0x01, count=3, 10, 20, 30, ETX]
+        assert_eq!(
+            payload,
+            vec![
+                CMD_DISCRIMINATOR,
+                CMD_APPLY_HOST_CONTEXT,
+                224,
+                0x01,
+                3,
+                10,
+                20,
+                30,
+                0x03
+            ]
+        );
+    }
+
+    #[test]
+    fn build_typed_payload_apply_host_context_clear_layer() {
+        // layer = None ⇒ wire byte 0xFF (clear host layer); clear_board false ⇒ flags 0.
+        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+            layer: None,
+            callbacks: Vec::new(),
+            clear_board: false,
+        });
+        // [0xF0, 0x05, 0xFF, 0x00, count=0, ETX]
+        assert_eq!(
+            payload,
+            vec![
+                CMD_DISCRIMINATOR,
+                CMD_APPLY_HOST_CONTEXT,
+                0xFF,
+                0x00,
+                0,
+                0x03
+            ]
+        );
+    }
+
+    #[test]
+    fn build_typed_payload_non_typed_returns_empty() {
+        // SendMessage / ListDevices are NOT typed commands; the run() dispatch
+        // routes them elsewhere. The builder returns an empty Vec (inert), never a
+        // panic, so a misroute can't wedge a live send path.
+        assert_eq!(
+            build_typed_payload(&RunCommand::SendMessage("App\x1DTitle".to_string())),
+            Vec::new()
+        );
+        assert_eq!(build_typed_payload(&RunCommand::ListDevices), Vec::new());
+    }
+
+    #[test]
+    fn build_typed_payload_multi_report_chunking() {
+        // A large APPLY_HOST_CONTEXT must span multiple 30-byte reports via the
+        // EXISTING batches_for path (no bespoke framing). 40 callback ids ⇒ payload
+        // = [0xF0, 0x05, layer, flags, count=40, <40 ids>, ETX] = 46 bytes ⇒ 2 reports.
+        let callbacks: Vec<u8> = (0..40u8).collect();
+        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+            layer: Some(224),
+            callbacks: callbacks.clone(),
+            clear_board: false,
+        });
+        // 5 header bytes (disc+cmd+layer+flags+count) + 40 ids + 1 ETX = 46.
+        assert_eq!(payload.len(), 46);
+        assert_eq!(*payload.first().unwrap(), CMD_DISCRIMINATOR);
+        assert_eq!(*payload.last().unwrap(), 0x03, "ETX must be the final byte");
+        // The id bytes are copied verbatim into the payload (after the 5-byte header).
+        assert_eq!(&payload[5..5 + callbacks.len()], &callbacks[..]);
+        // batches_for (the unchanged chunker): ceil(46 / 30) = 2 reports.
+        assert_eq!(batches_for(&payload), 2, "46 payload bytes ⇒ 2 reports");
+        // Sanity: a payload that fits one report still chunks to 1.
+        assert_eq!(batches_for(&build_typed_payload(&RunCommand::QueryInfo)), 1);
+    }
+
+    #[test]
     fn typed_command_constants_match_firmware_contract() {
         // Wire-protocol values are the canonical source of truth from the firmware
         // notifier.h (see firmware_wire_contract.md §Constants). Drift here would
@@ -626,5 +844,47 @@ mod tests {
             REPLY_READ_TIMEOUT_MS > 0,
             "reply read timeout must block for a real reply, not poll like the drain's 0"
         );
+    }
+
+    #[test]
+    fn build_typed_payload_apply_host_context_representative_ids() {
+        // Item-contract representative case: callbacks=[1,5,10] ⇒ count=3 then
+        // the three id bytes verbatim. Full byte sequence (firmware_wire_contract.md
+        // §APPLY_HOST_CONTEXT request): [0xF0,0x05,layer,flags,count=3,1,5,10,0x03].
+        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+            layer: Some(224), // HOST_LAYER_BASE
+            callbacks: vec![1, 5, 10],
+            clear_board: false,
+        });
+        assert_eq!(payload, vec![0xF0, 0x05, 224, 0x00, 3, 1, 5, 10, 0x03]);
+    }
+
+    #[test]
+    fn build_typed_payload_apply_host_context_clamps_count_at_255() {
+        // Edge case (P1.M2.T1.S2 contract): callbacks.len() > 255 must CLAMP the
+        // count byte to 255 — NOT truncate. `256u8 as u8 == 0`, which would tell
+        // the firmware "zero callbacks follow" while 256 id bytes + ETX actually
+        // follow ⇒ catastrophic parse drift. `.min(255)` prevents that.
+        // In practice callbacks.len() <= HOST_CALLBACK_MAX (32), so this path is
+        // unreachable on the happy path; the clamp is the defensive contract and
+        // this test pins it against regression.
+        let callbacks: Vec<u8> = (0..=255u8).collect(); // 256 elements (0..255)
+        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+            layer: Some(224),
+            callbacks,
+            clear_board: false,
+        });
+        // Header: [0xF0, 0x05, layer=224, flags=0x00], then COUNT MUST BE 255.
+        assert_eq!(&payload[..5], &[0xF0, 0x05, 224, 0x00, 255]);
+        // All 256 ids copied verbatim (item reference: extend_from_slice(callbacks)
+        // copies the full slice; only the count byte is clamped).
+        assert_eq!(payload.len(), 5 + 256 + 1, "header(5) + ids(256) + ETX(1)");
+        assert_eq!(
+            *payload.last().unwrap(),
+            0x03,
+            "ETX must remain the final byte"
+        );
+        // PROOF OF FIX: with the old `callbacks.len() as u8`, the count byte here
+        // would have been 0 (256 as u8 == 0) and this assertion would fail.
     }
 }

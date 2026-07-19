@@ -120,7 +120,7 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Implement build_command_data payload builder",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Pure function in core.rs that converts any RunCommand variant into the logical payload bytes (what goes after the 0x81 0x9F magic header in the wire format). For strings: [string_bytes, 0x03 ETX]. For typed commands: [0xF0, cmd_id, args, 0x03 ETX].",
               "subtasks": [
                 {
@@ -145,7 +145,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "Implement APPLY_HOST_CONTEXT payload in build_command_data",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -169,7 +169,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Implement parse_reply for typed 0x51 replies",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S3",
