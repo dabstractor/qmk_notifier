@@ -43,28 +43,35 @@ typedef char notifier_nfa_pattern_too_large_for_mcu[
 
 // Function to sanitize strings by removing non-ASCII characters
 // This prevents Unicode decode errors when the data is processed by the Python CLI
-static void sanitize_string(char *str) {
+// Function to sanitize strings by removing non-ASCII characters
+// This prevents Unicode decode errors when the data is processed by the Python CLI.
+// Iterates by explicit length (PRD F2.3) so an embedded NUL (0x00) — which is not
+// in the allowlist — is STRIPPED rather than truncating the scan at the first NUL.
+static void sanitize_string(char *str, size_t len) {
     if (!str) return;
-    
-    char *read_ptr = str;
+
     char *write_ptr = str;
-    
-    while (*read_ptr) {
-        // Only allow printable ASCII characters (32-126) and essential control characters (9, 10, 13)
-        // Also allow our delimiter and terminator characters
-        if ((*read_ptr >= 32 && *read_ptr <= 126) || 
-            *read_ptr == 9 ||   // tab
-            *read_ptr == 10 ||  // newline
-            *read_ptr == 13 ||  // carriage return
-            *read_ptr == GS_DELIMITER[0] ||  // group separator (our delimiter)
-            *read_ptr == ETX_TERMINATOR[0]) { // end of text (our terminator)
-            *write_ptr++ = *read_ptr;
+
+    // Length-bounded scan: read exactly `len` bytes. A NUL (0x00) is < 32 and is
+    // not 9/10/13/GS/ETX, so it fails the allowlist and is skipped (stripped),
+    // letting subsequent valid bytes through. (Previously `while (*read_ptr)`
+    // stopped at the first NUL, truncating instead of stripping — bug §Issue 2.)
+    for (size_t i = 0; i < len; i++) {
+        char c = str[i];
+        // Only allow printable ASCII (32-126) + essential control chars (9,10,13)
+        // + our delimiter (GS) and terminator (ETX).
+        if ((c >= 32 && c <= 126) ||
+            c == 9 ||   // tab
+            c == 10 ||  // newline
+            c == 13 ||  // carriage return
+            c == GS_DELIMITER[0] ||  // group separator (our delimiter)
+            c == ETX_TERMINATOR[0]) { // end of text (our terminator)
+            *write_ptr++ = c;
         }
-        // Skip non-ASCII characters (values > 127) and other control characters
-        read_ptr++;
+        // Skip every other byte (incl. NUL 0x00, >127, other control chars).
     }
-    
-    // Null terminate the sanitized string
+
+    // Null terminate the sanitized string at the write pointer (<= str + len).
     *write_ptr = '\0';
 }
 
@@ -489,10 +496,10 @@ void hid_notify(uint8_t *data, uint8_t length) {
             // do NOT let leftover bytes prefix the next message. Only dispatch
             // if we were accumulating a clean (non-overflowed) message.
             if (!dropping) {
-                msg_buffer[msg_index] = '\0'; // Ensure the buffer is properly terminated
-                
-                // Sanitize the buffer to remove non-ASCII characters that could cause decode errors
-                sanitize_string(msg_buffer);
+                // Sanitize the buffer in place, iterating by explicit length so an
+                // embedded NUL is stripped (PRD F2.3) rather than truncating the scan.
+                // sanitize_string NUL-terminates at write_ptr (<= str + msg_index).
+                sanitize_string(msg_buffer, (size_t)msg_index);
                 
                 match = process_full_message(msg_buffer);
             }

@@ -43,21 +43,21 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Issue 2 — sanitize_string NUL Stripping Fix",
-          "status": "Planned",
+          "status": "Researching",
           "description": "sanitize_string (notifier.c:46-69) uses while (*read_ptr) which truncates at the first NUL byte instead of stripping it. The PRD spec (§8.2, §F2.3) says 'Strip every other byte' — NUL is 'every other byte' and should be stripped, preserving subsequent valid bytes. This is unreachable in normal operation (transport appends ETX before zero-fill) but is a theoretical robustness defect. Fix the function to iterate by explicit length and add a stub test verifying the fix through the hid_notify → process_full_message path.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Fix sanitize_string to strip NUL by iterating with explicit length",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Change sanitize_string from a C-string loop (while *read_ptr) to an explicit-length loop so NUL bytes are encountered and stripped (skipped by the allowlist) rather than causing truncation. Update the single call site in hid_notify to pass msg_index as the length.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Change sanitize_string signature to accept length and fix the iteration loop",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/002_c243e735980a/bugfix/001_4a8e381fbf10/architecture/findings_and_risks.md §Issue 2. sanitize_string is at notifier.c:46-69, declared `static void sanitize_string(char *str)`. It uses `while (*read_ptr)` (line 52) which stops at the first NUL byte. The allowlist at lines 55-61 correctly excludes 0x00 but the loop never reaches it. The function is `static` (file-local) with exactly ONE caller: hid_notify at notifier.c:495, where `msg_index` holds the count of valid payload bytes written to msg_buffer. PRD §8.2 spec says signature is `sanitize_string(char *str)` — this creates a documented spec drift (see findings_and_risks.md).\n2. INPUT: No data from prior subtasks.\n3. LOGIC:\n   a) Change the signature at notifier.c:46 from:\n        `static void sanitize_string(char *str)`\n      to:\n        `static void sanitize_string(char *str, size_t len)`\n   b) Replace the `while (*read_ptr)` loop (line 52) with an index-bounded loop:\n        `for (size_t i = 0; i < len; i++)`\n      Read each byte via `read_ptr` (which still advances) or via `str[i]`. The allowlist condition (lines 55-61) stays unchanged. NUL bytes (0x00) are not in the allowlist → they are skipped (stripped), NOT truncating the scan.\n   c) Keep the `*write_ptr = '\\0'` NUL-termination at the end (line 67).\n   d) Keep the NULL-input guard `if (!str) return;` (line 47). Add `if (len == 0) { *str = '\\0'; return; }` or let the loop handle it (zero iterations → write_ptr == str → *str = '\\0').\n   e) Update the call site at notifier.c:495 from:\n        `sanitize_string(msg_buffer);`\n      to:\n        `sanitize_string(msg_buffer, (size_t)msg_index);`\n      This passes the count of bytes actually written to msg_buffer (before the NUL terminator was set). The NUL terminator `msg_buffer[msg_index] = '\\0'` at line 494 should be REMOVED since sanitize_string now NUL-terminates internally (write_ptr ≤ str + len). If keeping it for safety, it is redundant but harmless.\n   DO NOT modify the allowlist condition, the GS_DELIMITER/ETX_TERMINATOR checks, or any other function.\n4. OUTPUT: notifier.c compiles clean with both the normal build and the stub-compiled build (run_notifier_stub_tests.sh). The existing 11 dispatch + 31 OS stub tests must still pass (0 FAIL lines). Verify: ./run_notifier_stub_tests.sh prints '✓ notifier stub-compile gate PASSED'.\n5. DOCS: none — sanitize_string is static (not public API); the spec drift is documented in architecture/findings_and_risks.md. No user-facing/config surface change.",
@@ -73,14 +73,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Add stub test for embedded-NUL sanitization through hid_notify",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add a test case to test_notifier_dispatch.c that sends a synthetic HID report containing an embedded NUL byte (0x00) in the payload, terminated by ETX. Verify that the message is correctly sanitized (NUL stripped, subsequent bytes preserved) rather than truncated at the NUL. This confirms the sanitize_string fix works end-to-end through the real hid_notify → process_full_message dispatch path.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Add embedded-NUL sanitization test to test_notifier_dispatch.c",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
