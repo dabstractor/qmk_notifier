@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "v0.3.1 Reply-Capture & API Conformance Bug Fixes",
-      "status": "Researching",
+      "status": "Ready",
       "description": "Fix the five issues identified in the v0.3.0 validation: (1) Critical — multi-report reply capture returns the wrong CommandResponse; (2) Major — parse_cli_args signature drift from PRD §3; (3) Major — nondeterministic CommandResponse from missing pre-send IN-buffer drain; (4) Minor — unsafe block contradicts PRD §12 NFR; (5) Minor — undocumented -c short flag on --create-config. All fixes preserve backward compatibility with the qmkonnect consumer (which discards run()'s Ok value and builds RunParameters directly).",
       "milestones": [
         {
@@ -275,14 +275,14 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Documentation Sync",
-          "status": "Researching",
+          "status": "Ready",
           "description": "Mode B changeset-level documentation sweep. Update README.md technical details to reflect the multi-report reply-capture fix and the parse_cli_args signature restoration. Correct stale architecture docs that state the firmware does not implement typed commands. These docs span the entire changeset and only make sense once all implementing subtasks are complete.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Sync changeset-level documentation",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Update cross-cutting documentation files that summarize the entire v0.3.1 changeset: README.md technical-details section (reply parsing description is stale — says 'one 32-byte IN report is read'), and architecture docs that incorrectly state the firmware does not implement typed commands.",
               "subtasks": [
                 {
@@ -309,7 +309,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S2",
                   "title": "Correct stale architecture docs (firmware typed-command status)",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S2",
