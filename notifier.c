@@ -113,6 +113,14 @@ static bool typed_mode = false;
  * reassemble correctly (the byte count survives across hid_notify calls) and
  * is reset at every ETX/overflow boundary. */
 static uint16_t typed_literal_remaining = 0;
+/* typed_awaiting_terminator — watchdog for typed reassembly desync (Issue 1).
+ * Latched when typed_literal_remaining transitions to 0 AFTER the extension
+ * block (all declared literal bytes consumed). Checked at the top of the byte
+ * loop: if the NEXT byte is not ETX, the typed message was malformed (count/ids
+ * mismatch or a truncated/abandoned frame) — reset all typed state + msg_index
+ * and drop the frame, exactly like the overflow path, so the next well-formed
+ * legacy string resumes normal routing (§1.3/§12 robustness). */
+static bool typed_awaiting_terminator = false;
 
 /* typed_fixed_arg_bytes(cmd_id) — the FIXED argument length for a typed command
  * id, EXCLUDING the discriminator and cmd_id bytes and EXCLUDING the variable
@@ -835,6 +843,7 @@ void hid_notify(uint8_t *data, uint8_t length) {
     if (msg_index == 0 && length >= 3 && data[2] == NOTIFY_CMD_DISCRIMINATOR) {
         typed_mode = true;
         typed_literal_remaining = 2;   /* consume discriminator + cmd_id literally */
+        typed_awaiting_terminator = false; /* fresh typed message: clear watchdog */
     }
 
     // Strip off those 2 identifying characters
@@ -856,6 +865,19 @@ void hid_notify(uint8_t *data, uint8_t length) {
          * makes SET_OS dispatch (BUG-1) and stops AHC from silently truncating
          * on a 0x03 argument (BUG-2). */
         bool typed_literal = (typed_mode && typed_literal_remaining > 0);
+
+        /* WATCHDOG (Issue 1): the byte after the last consumed literal must be
+         * ETX. If we are awaiting the terminator and this byte is NOT ETX, the
+         * typed message is malformed (count/ids mismatch or a truncated frame):
+         * reset all typed reassembly state + msg_index, then fall through so
+         * the current byte is treated as a potential new message start (no
+         * continue/break — the byte is appended normally below). */
+        if (typed_awaiting_terminator && !typed_literal && c != ETX_TERMINATOR[0]) {
+            typed_mode = false;
+            typed_literal_remaining = 0;
+            typed_awaiting_terminator = false;
+            msg_index = 0;
+        }
 
         // End of text (ASCII 3) indicates the end of the message — but ONLY on
         // the legacy path or once the typed command's args are fully consumed.
@@ -888,6 +910,7 @@ void hid_notify(uint8_t *data, uint8_t length) {
             dropping = false;
             typed_mode = false;          /* RISK-1: reset at every ETX boundary */
             typed_literal_remaining = 0; /* BUG-1/2: clear typed reassembly state */
+            typed_awaiting_terminator = false; /* Issue 1: clear watchdog */
             break;
         } else if (dropping) {
             // Mid-oversized-message: silently ignore all payload bytes until the
@@ -925,6 +948,15 @@ void hid_notify(uint8_t *data, uint8_t length) {
                         uint16_t room = (uint16_t)((MSG_BUFFER_SIZE - 1) - msg_index);
                         typed_literal_remaining += (ahc_count > room) ? room : ahc_count;
                     }
+                    /* WATCHDOG latch (Issue 1): all declared literal bytes now
+                     * consumed (post-extension) — await ETX on the NEXT byte.
+                     * Must be AFTER the extension above: tlr transiently hits 0
+                     * at msg_index==2 (cmd_id consumed, before fixed args) and
+                     * msg_index==5 (count consumed, before ids) — latching
+                     * earlier would false-reset every well-formed command. */
+                    if (typed_literal_remaining == 0) {
+                        typed_awaiting_terminator = true;
+                    }
                 }
             } else {
                 // Buffer overflow – enter drop mode: reset the index and discard
@@ -933,6 +965,7 @@ void hid_notify(uint8_t *data, uint8_t length) {
                 dropping = true;
                 typed_mode = false;          /* RISK-1: dropped msg clears typed classification */
                 typed_literal_remaining = 0; /* BUG-1/2: clear typed reassembly state */
+                typed_awaiting_terminator = false; /* Issue 1: clear watchdog */
             }
         }
     }
