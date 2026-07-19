@@ -14,6 +14,11 @@ typedef struct {
     const int layer;
     const bool case_sensitive;
 } layer_map_t;
+typedef struct {
+    const char *name;
+    callback_t  on_enable;
+    callback_t  on_disable;   /* may be NULL */
+} host_callback_t;
 
 // Forward declarations - implementation provided in notifier.c
 command_map_t* get_command_map(void);
@@ -23,11 +28,49 @@ size_t get_layer_map_size(void);
 // The OS selector — pushed from the keymap (§8.7). os_variant_t comes from
 // os_detection.h (included above). ONLY public OS entry point (§2 F8.2).
 void notifier_set_os(os_variant_t os);
+// Host-callback registry accessors (user overrides via DEFINE_HOST_CALLBACKS;
+// module provides weak {NULL,0} defaults — §14). ID = array index.
+host_callback_t* get_host_callbacks(void);
+size_t           get_host_callbacks_size(void);
 
 #define GS_DELIMITER "\x1D"  // ASCII 29 (Group Separator)
 #define ETX_TERMINATOR "\x03"  // ASCII 3 (End of Text)
 #define WINDOW_TITLE(classname, title) classname GS_DELIMITER title
 #define WT(...) WINDOW_TITLE(__VA_ARGS__)
+
+// ---- Host-Side Rules & Typed Commands (§4.6 / §14) ----------------------
+// Wire discriminator: data[2] == 0xF0 => typed command (§4.6). Never begins a
+// real matched string (sanitizer allows 0x20-0x7E), so legacy strings coexist.
+#define NOTIFY_CMD_DISCRIMINATOR      0xF0   // §4.6 / §16
+// Typed-response marker (>=2), distinct from legacy match-bool 0/1 (§4.6).
+#define NOTIFY_RESPONSE_MARKER        0x51   // §4.6 / §16
+// Typed command ids (§4.6 command table; 0x04 reserved for VIA-coexist).
+#define NOTIFY_CMD_QUERY_INFO         0x01   // §4.6
+#define NOTIFY_CMD_QUERY_CALLBACK     0x02   // §4.6
+#define NOTIFY_CMD_SET_OS             0x03   // §4.6 / §4.7
+#define NOTIFY_CMD_APPLY_HOST_CONTEXT 0x05   // §4.6 / §14
+// Protocol version: 1 = legacy string-only; 2 = typed-command capable (§4.6).
+#define NOTIFY_PROTO_VER              2      // §4.6
+// feature_flags BIT positions (§4.6); notifier.c builds the mask at runtime:
+//   0x01 | (get_host_callbacks_size()>0 ? 0x02 : 0)
+#define NOTIFY_FEATURE_APPLY_HOST_CONTEXT 0x01  // §4.6
+#define NOTIFY_FEATURE_CALLBACK_REGISTRY  0x02  // §4.6
+#define NOTIFY_FEATURE_VIA_COEXIST        0x04  // §4.6 (reserved)
+// Host-callback registry cap (§14) — bounds host_cb_enabled[] in notifier.c.
+#define HOST_CALLBACK_MAX              32     // §14
+// Host layers reserved >= 224 so they resolve above board layers (§14/§16;
+// 255 = LAYER_UNSET, defined in notifier.c).
+#define HOST_LAYER_BASE                224    // §14 / §16
+
+// Named host-callback registry (§14). ID = array index, stable per build;
+// the host re-queries names on reconnect so cross-flash renumbering is
+// harmless. Omitting this macro => weak {NULL,0} defaults (notifier.c) =>
+// callback_count=0, feature bit 0x02 clear; module behaves identically to today.
+#define DEFINE_HOST_CALLBACKS(...) \
+    host_callback_t user_host_callbacks[] = __VA_ARGS__; \
+    const size_t user_host_callbacks_size = sizeof(user_host_callbacks) / sizeof(user_host_callbacks[0]); \
+    host_callback_t* get_host_callbacks(void) { return user_host_callbacks; } \
+    size_t get_host_callbacks_size(void) { return user_host_callbacks_size; }
 
 // Define macros to create the maps
 #define DEFINE_SERIAL_COMMANDS(...) \
