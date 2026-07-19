@@ -4,12 +4,17 @@
 Target: a single document complete enough for a developer agent to one-shot this
 entire codebase from scratch. Read it top to bottom before writing any code.
 
-> **Revision — multi-OS map selection (opt-in).** This revision adds per-OS
-> command/layer maps selected by the detected host OS, with the default map as a
-> per-track fallback (§2 F8/F9, §5.5, §8.6–§8.7, §10.3). It is a strict opt-in
-> overlay: a default-only keymap is byte-identical to the prior firmware. A
-> host-provided authoritative OS source is specced end-to-end but **HELD** for
-> the next cycle (§4.7, §14.1).
+> **Revision — multi-OS map selection (opt-in, round A, shipped) + host-side
+> rules wire contract (round B, specified).** Round A adds per-OS command/layer
+> maps selected by the detected host OS, with the default map as a per-track
+> fallback (§2 F8/F9, §5.5, §8.6–§8.7, §10.3); it is a strict opt-in overlay — a
+> default-only keymap is byte-identical to the prior firmware, and is the current
+> shipped state. This revision also specifies the **round-B host-side-rules wire
+> contract** — the typed-command namespace (§4.6), host-authoritative `SET_OS`
+> (§4.7), and this firmware's board-side host-rules support (`clear_board`, the
+> `host_layer`/host-callback trackers, the named callback registry) in §14. Round
+> B is **specified here and in the companion specs** (`qmkonnect/spec/HOST_RULES.md`,
+> the `qmk_notifier` crate SPEC) **but not yet implemented** in this repo.
 
 > **Scope of "this codebase."** This document specifies **qmk-notifier** (hyphen) —
 > the **C firmware module** that runs on a QMK keyboard. It is *not* the desktop
@@ -35,7 +40,7 @@ entire codebase from scratch. Read it top to bottom before writing any code.
 11. [Build & Test (the acceptance gate)](#11-build--test-the-acceptance-gate)
 12. [Non-Functional Requirements](#12-non-functional-requirements)
 13. [Key Invariants a Dev Must Preserve](#13-key-invariants-a-dev-must-preserve)
-14. [Planned Future: Host-Side Rules (v0.3.0, NOT implemented now)](#14-planned-future-host-side-rules-v030-not-implemented-now)
+14. [Round B: Host-Side Rules (v0.3.0 — specified; next implementation)](#14-round-b-host-side-rules-v030-specified-next-implementation)
 15. [Appendix A — Pattern-Semantics Reference Table](#15-appendix-a--pattern-semantics-reference-table)
 16. [Appendix B — Constants Reference](#16-appendix-b--constants-reference)
 17. [Appendix C — File Sizes & Live Source of Truth](#17-appendix-c--file-sizes--live-source-of-truth)
@@ -293,8 +298,8 @@ qmk-notifier/
 - `application_class` — the stable app identifier (e.g. `firefox`, `code`,
   `neovide`, `Chrome_WidgetWin_1`). What the user matches in firmware.
 - `\x1D` — ASCII **Group Separator** (decimal 29). The delimiter. Macro name:
-  `GS_DELIMITER`. Comment in the header calls it "Unit Separator" — it is in fact
-  GS (0x1F is US); the byte value `0x1D` (29 = GS) is authoritative.
+  `GS_DELIMITER` (the header comment reads `// ASCII 29 (Group Separator)`;
+  `0x1F` is the separate "Unit Separator" codepoint and is not used here).
 - `window_title` — the window's title, may be empty.
 
 Examples produced by the desktop:
@@ -377,45 +382,128 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
 `hid_notify` returns immediately if `data[0..1] != 0x81 0x9F`, so each module
 only consumes its own messages. `0x81 0x9F` is arbitrary but fixed forever.
 
-### 4.6 Planned typed-command namespace (v0.3.0, forward-looking — NOT now)
+### 4.6 Typed-command namespace (round B / v0.3.0 — specified; canonical owner)
 
-The planned host-rules feature (§14) reserves a typed-command discriminator at
-`data[2] == 0xF0` (request) / response marker `0x51`. Because the sanitizer only
-allows bytes `0x20–0x7E`, `0xF0` can never begin a real string, so a future
-firmware can distinguish `[0x81][0x9F][0xF0][...]` (typed command) from
-`[0x81][0x9F][<printable>...]` (legacy string) unambiguously. **Do not implement
-this now.** It is documented only so the v0.3.0 upgrade path is non-breaking.
+This section is the **canonical wire contract** for the typed-command namespace.
+The desktop `PROTOCOL.md` and the `qmk_notifier` crate SPEC mirror it; where they
+disagree, **this section wins** (the firmware dictates the conditions under which
+communication can happen — see `qmkonnect/spec/HOST_RULES.md` for the host-side
+orchestration).
 
-### 4.7 OS source: firmware-side today; host-provided OS RESERVED (next cycle)
+**Discriminator.** The byte after the magic header selects the path:
+- `data[2] == 0xF0` ⇒ **typed command** (round B). Routed to
+  `handle_typed_command()` *before* any string processing, so it has **no
+  `process_full_message` side effects** (no disable/deactivate).
+- anything else ⇒ **legacy string** (unchanged): bytes are string chars until
+  `0x03` (ETX). Because the sanitizer allows only `0x20–0x7E` (+ a few controls),
+  `0xF0` can never begin a real matched string, so **legacy firmware safely
+  ignores typed commands** (walks them as a no-match string, replies
+  `response[0]=0`).
 
-**Today (implemented here):** the OS used for multi-OS map selection (§2 F8) is
+**Framing.** Typed commands are **ETX-framed and may span multiple 32-byte
+reports**, exactly like legacy strings:
+`[0x81][0x9F][0xF0][cmd_id][ args… ][0x03]`, chunked at 30 payload bytes/report.
+A single-report command simply carries its args then `0x03`. Multi-report framing
+removes any fixed cap on argument size (notably the callback-id list in
+`APPLY_HOST_CONTEXT`).
+
+**Responses** (32-byte reports, sent on every typed command):
+- Legacy string response (unchanged): `[matched(0|1)][padding…]`.
+- Typed response: `[0x51][cmd_id_echo][payload…][padding]`. The `0x51` marker
+  (≥2) is distinct from the legacy `0`/`1`, so the host disambiguates without
+  ambiguity. No reply within the host's timeout ⇒ `Timeout` (host treats legacy
+  firmware / offline as string-only).
+
+**Command table (round B):**
+
+| `cmd_id` | Name | Request args | Response payload (after `[0x51][cmd_echo]`) |
+| --- | --- | --- | --- |
+| `0x01` | `QUERY_INFO` | none | `[proto_ver][feature_flags][callback_count][board_rules_present]` |
+| `0x02` | `QUERY_CALLBACK` | `[index]` | `[index][name bytes, NUL-padded]` (name absent ⇒ `[index][0x00]`) |
+| `0x03` | `SET_OS` | `[os_byte]` | `[ack]` (`1`=applied) |
+| `0x04` | *(reserved — VIA-coexist dispatch, Phase E)* | — | — |
+| `0x05` | `APPLY_HOST_CONTEXT` | `[layer][flags][count][id0][id1]…` | `[ack]` (`1`=applied) |
+
+**Field definitions:**
+- `proto_ver`: protocol version. `1` = legacy string-only firmware (today's
+  multi-OS build is `proto_ver = 1` — it sends no typed commands). `2` = round-B
+  firmware (typed-command capable). **Owned by the firmware** (C6).
+- `feature_flags` bitmask: `0x01` = `APPLY_HOST_CONTEXT` supported; `0x02` =
+  callback registry present (`DEFINE_HOST_CALLBACKS`); `0x04` = *(reserved)*
+  VIA-coexist dispatch.
+- `callback_count`: number of entries in the firmware's host-callback registry
+  (`0` if none / not defined).
+- `board_rules_present`: `1` iff **any** board map (default or any
+  `DEFINE_SERIAL_*_OS`) is non-empty — i.e. the keymap uses the notifier matcher
+  at all. A single bit suffices; per-OS granularity is not exposed (the host does
+  not need it).
+- `SET_OS.os_byte`: `0 UNSURE · 1 LINUX · 2 WINDOWS · 3 MACOS · 4 IOS` (mirrors
+  QMK's `os_variant_t`). See §4.7.
+- `APPLY_HOST_CONTEXT.layer`: the host's desired host-layer number, or `0xFF`
+  (255 = `LAYER_UNSET`) to clear the host layer. **Host layers are reserved ≥
+  224** so they resolve above board layers under QMK's highest-layer-wins rule.
+- `APPLY_HOST_CONTEXT.flags` bit 0 = **`clear_board`**: when set, the firmware
+  `deactivate_layer()`s its board `activated_layer` and `disable_command()`s its
+  current board command **before** applying the host context. This is the
+  mechanism by which the host selects per-window "replace" (clear board) vs
+  "stack" (leave board) semantics — see §14.
+- `APPLY_HOST_CONTEXT.id…`: the **full desired enabled** host-callback id set;
+  the firmware diffs against its current enabled set and calls `on_enable`/
+  `on_disable` accordingly (disable-before-enable).
+
+**Capability handshake & legacy fallback.** On device (re)connect the host sends
+`QUERY_INFO`:
+1. Round-B firmware replies `[0x51][0x01][proto=2][flags][count][…]`.
+2. Legacy firmware walks the typed bytes as a no-match string, replies
+   `[0x00…]` (or times out). The host treats `response[0] != 0x51` (or timeout)
+   as **legacy ⇒ string-only mode**: it keeps sending the legacy string (board
+   rules still work) and **never sends typed commands**.
+3. If round-B and `flags & 0x01`: for `i in 0..count` send `QUERY_CALLBACK(i)`
+   and build the `name→id` map; validate the host `rules.toml` callback names
+   against it (warn + skip unknown).
+
+**Handshake timing & `has_been_queried` (correctness).** `QUERY_INFO`/typed
+commands bypass `process_full_message`, so they have **no board side effects** on
+round-B firmware. Against *legacy* firmware, `QUERY_INFO` is walked as a no-match
+string and `process_full_message` *always* calls `disable_command()`/
+`deactivate_layer()` first — harmless only when board state is fresh. The
+firmware therefore sets a **`has_been_queried`** bool on the first `QUERY_INFO`
+it services, and the host handshakes **at most once per board boot** (never on a
+mere HID re-enumeration/reconnect), so a mid-session reconnect against legacy
+firmware cannot clear an active board layer. Host-rules are additionally gated
+on `proto_ver == 2`, so legacy firmware never receives typed commands in
+practice.
+
+### 4.7 OS source: host-authoritative when connected; firmware heuristic as fallback
+
+**Round A (shipped):** the OS used for multi-OS map selection (§2 F8) is
 *determined firmware-side* by QMK's `OS_DETECTION` feature and **pushed** into
-the module by the keymap via `notifier_set_os(os_variant_t)` (§5.2, §8.7). The
-host (QMKonnect / `qmk_notifier` crate) sends **only** the `class\x1Dtitle`
-string over the wire — **no OS byte is sent today**, and the wire protocol in
-§4.1–§4.5 is unchanged by multi-OS.
+the module by the keymap via `notifier_set_os(os_variant_t)` (§5.2, §8.7).
+`OS_DETECTION` is a heuristic USB fingerprint and can misdetect (Linux boxes
+spoofing macOS for media-key compat, VMs, `OS_UNSURE`). When no host is
+connected, this is the only OS signal and the wire protocol in §4.1–§4.5 is
+unchanged.
 
-**Reserved for a future cycle (HELD — do NOT implement now):** the host knows
-its own OS with certainty, unlike the firmware's heuristic USB-fingerprint
-(`OS_DETECTION` can misdetect — e.g. Linux boxes spoofing macOS for media-key
-compat, VMs, `OS_UNSURE`). A future cycle MAY add **host-provided OS** as the
-authoritative source, taking precedence over the firmware heuristic. This
-requires wire-protocol work (almost certainly a new typed command in the
-reserved `0xF0` namespace, §4.6 — e.g.
-`[0x81][0x9F][0xF0][SET_OS][os_byte][0x03]` with a `0x51`-marked response) **and**
-a performance/round-trip analysis, plus the handshake-timing constraint already
-noted in the host-rules PRP: typed commands sent to *legacy* firmware are walked
-as no-match strings and trigger `process_full_message`'s disable/deactivate side
-effects, so a `SET_OS` command may only be sent to firmware that advertised
-support via a capability handshake.
+**Round B (specified):** the host (QMKonnect / `qmk_notifier` crate) knows its
+own OS **with certainty** and it never changes at runtime (it is the OS the
+desktop is running on). The host therefore declares its OS at connect via the
+`SET_OS` typed command (`0x03`, §4.6): `[0x81][0x9F][0xF0][0x03][os_byte][0x03]` →
+`[0x51][0x03][ack]`. **While a host is connected and has sent `SET_OS`, the
+host's value is authoritative for `current_os`** — it takes precedence over the
+`OS_DETECTION` heuristic. ("On-OS-change" is then a non-event for the host-rules
+path: the host sends `SET_OS` once at connect; the firmware's `OS_DETECTION`-driven
+maps resume as the fallback only when no host is connected.)
 
-**Orthogonality (load-bearing):** multi-OS map selection touches **only** which
-board `command_map`/`layer_map` the legacy *string* path consults. It does not
-consume the `0xF0` discriminator, does not define typed commands, and does not
-touch the future `host_layer`/host-callback trackers (§14). A future
-host-provided-OS implementation (**B**) will take precedence over the firmware
-heuristic (**A**) once both exist; until then A stands alone. The full
-end-to-end design for B is captured as HELD in §14.1.
+`SET_OS` updates `current_os` through the same seam as `notifier_set_os`, so an
+OS **change** clears notifier state per F9 (disable command + deactivate layer)
+before recording the new OS. `SET_OS` is sent only to round-B firmware (gated by
+the §4.6 handshake); legacy firmware never sees it.
+
+**Orthogonality (load-bearing):** multi-OS map selection (round A) touches
+**only** which board `command_map`/`layer_map` the legacy *string* path
+consults. Round B adds the typed-command namespace (§4.6) and the
+`host_layer`/host-callback trackers (§14) as **independent** state — they do not
+consume each other's mechanisms.
 
 ---
 
@@ -1408,80 +1496,114 @@ The exit code is non-zero iff any suite failed.
 
 ---
 
-## 14. Planned Future: Host-Side Rules (v0.3.0, NOT implemented now)
+## 14. Round B: Host-Side Rules (v0.3.0 — specified; next implementation)
 
-This section is **forward-looking only** — it documents the roadmap so the
-current design stays upgrade-compatible. **Do not implement any of it in a
-rebuild of the current codebase.** Full design lives in the QMKonnect companion
-spec `HOST_RULES.md`.
+Round B moves app→layer and app→callback matching onto the desktop host
+(editable `rules.toml`, no reflash). It **spans all three repos**: the canonical
+host-side design lives in `qmkonnect/spec/HOST_RULES.md` and the transport in the
+`qmk_notifier` crate SPEC. This section specifies **this firmware's** round-B
+additions and the coexistence model. Round A (multi-OS, §2 F8) remains the
+current shipped state; round B is **specified but not yet implemented here**.
 
-The planned v0.3.0 feature moves app→layer and app→callback matching onto the
-desktop host (editable `rules.toml`, no reflash), stacking on top of the board's
-`DEFINE_*` rules. It spans all three repos and would add to this firmware:
+> **Matcher location.** The host-side pattern matcher is ported into
+> **`qmkonnect`** (not the `qmk_notifier` crate), with full parity to this
+> module's `pattern_match.c` (the firmware matcher + its test corpus are the
+> single source of truth for match semantics). The crate stays transport-only.
 
-- A **named callback registry** (`DEFINE_HOST_CALLBACKS({ … })`) + accessor pair,
-  mirroring the existing `command_map` weak-default pattern.
-- A **second layer tracker** `host_layer` (independent of `activated_layer`) and
-  a host-callback enable set `host_cb_enabled[]`.
-- **Typed-command dispatch** at the top of `hid_notify()`: if `data[2] == 0xF0`,
-  parse `data[3]` as a typed command id (`QUERY_INFO=0x01`, `QUERY_CALLBACK=0x02`,
-  `APPLY_HOST_CONTEXT=0x05`) and reply with a `0x51`-marked response; else fall
-  through to the legacy string path unchanged.
-- Handlers `set_host_layer` (on/off/clear; orthogonal to the board layer) and
-  `apply_host_callbacks` (disable-before-enable diff against the desired set).
+**Coexistence model — host chooses "stack" vs "replace" per window, via
+`clear_board`.** The former stack-vs-replace open question (§14.1 B2) is
+**resolved**: the firmware offers **both**, and the **host selects which on each
+window change** through the `clear_board` flag on `APPLY_HOST_CONTEXT` (§4.6).
+Board (`DEFINE_*` / `DEFINE_*_OS`) rules are never silently discarded — the host
+decides, per matched rule, whether the board gets to run:
 
-The current design is already compatible with this upgrade:
-- `0xF0` can never begin a real matched string (the sanitizer allows only
-  `0x20–0x7E`), so legacy firmware safely ignores typed commands.
-- Typed responses use marker `0x51` (≥2), distinguishable from the legacy `0`/`1`
-  match-bool response.
-- Board rules keep running unchanged; host rules stack on top (board layer first,
-  host layer above; board callbacks first, host callbacks after).
+- **Stack** (`clear_board = 0`): the host first sends the legacy **string**
+  (board runs its rules → sets `activated_layer` + current command → replies),
+  *then* sends `APPLY_HOST_CONTEXT{layer, callbacks, clear_board=0}`. Board
+  layer/command remain active; the host layer stacks above; board callbacks fire
+  first, host callbacks after.
+- **Replace** (`clear_board = 1`): the host sends **only**
+  `APPLY_HOST_CONTEXT{layer, callbacks, clear_board=1}` (no string). The firmware
+  `deactivate_layer()`s its board layer and `disable_command()`s its board
+  command, then applies the host layer + callbacks. Board rules are inert for
+  that window and re-engage normally once the host next sends a string.
 
-### 14.1 Host-provided OS & full host-rule replacement (HELD — next cycle, NOT now)
+The host's per-rule `disable_firmware_config` flag (default `false`, in
+`rules.toml`) drives this: a matched rule with `disable_firmware_config = true`
+contributes to a **replace** decision; the window is replace iff **every** matched
+rule is disabling (the string is shared by both board lanes, so it is sent iff
+the board has rules **and** ≥1 matched rule is non-disabling). See
+`qmkonnect/spec/HOST_RULES.md`.
 
-This subsection captures the **end-to-end intent** of the next cycle so the
-multi-OS design here (call it **A**: firmware-side OS selection) does not paint
-the firmware into a corner. It is **HELD**: do not implement any of it in a
-rebuild of the current codebase. It will take precedence over A once implemented.
+**Firmware round-B additions:**
 
-**B1 — Host-provided OS (authoritative).** The host (QMKonnect / `qmk_notifier`
-crate) knows its own OS with certainty, unlike the firmware heuristic
-(`OS_DETECTION` can misdetect). A future cycle adds a typed command — almost
-certainly in the reserved `0xF0` namespace (§4.6), e.g.
-`[0x81][0x9F][0xF0][SET_OS=0xNN][os_byte][0x03]` with a `0x51`-marked response —
-by which the host declares its OS at connect. When a host-provided OS is present
-it **takes precedence over** the firmware heuristic (A): the module uses the
-host's value for `current_os` instead of the pushed `OS_DETECTION` value.
-Implementation requires wire-protocol work across all three repos and a
-round-trip/performance analysis, plus the handshake-timing constraint (typed
-commands sent to *legacy* firmware are walked as no-match strings and trigger
-`process_full_message`'s disable/deactivate side effects — so `SET_OS` may only
-be sent to firmware that advertised support via a capability handshake).
+- **Named callback registry** — `DEFINE_HOST_CALLBACKS({ … })` + accessor pair,
+  mirroring the existing `command_map` weak-default pattern. `ID = array index`,
+  stable for a given build; the host re-queries names on every reconnect so
+  cross-flash renumbering is harmless. Bounded by `HOST_CALLBACK_MAX` (static
+  array); `QUERY_INFO.callback_count` reports the true count.
+  ```c
+  typedef struct { const char *name; callback_t on_enable; callback_t on_disable; } host_callback_t;
+  host_callback_t* get_host_callbacks(void);
+  size_t           get_host_callbacks_size(void);
+  #define DEFINE_HOST_CALLBACKS(...)  /* defines user_host_callbacks[] + accessors */
+  ```
+- **Second layer tracker** `host_layer` (independent of board `activated_layer`)
+  and a host-callback enable set `host_cb_enabled[]`. `set_host_layer(layer)`:
+  `layer_on`/`layer_off` only the host tracker; `0xFF` ⇒ clear. Orthogonal to the
+  board tracker. Host layers are reserved **≥ 224** (`LAYER_UNSET = 255`).
+  ```c
+  #define LAYER_UNSET 255
+  static uint8_t host_layer = LAYER_UNSET;
+  static bool host_cb_enabled[HOST_CALLBACK_MAX];
+  static void set_host_layer(uint8_t layer);          /* on/off/clear, host tracker only */
+  static void apply_host_callbacks(const uint8_t *ids, uint8_t count); /* disable-before-enable diff */
+  ```
+- **Typed-command dispatch** at the top of `hid_notify()`: if `length >= 3 &&
+  data[2] == 0xF0`, route to `handle_typed_command()` and return; else the legacy
+  string path runs unchanged (round A, §8.6). `QUERY_INFO`/`QUERY_CALLBACK` are
+  answerable before any string has been seen. `APPLY_HOST_CONTEXT` honors
+  `clear_board` (above) then calls `set_host_layer()` + `apply_host_callbacks()`.
+  `SET_OS` updates `current_os` (authoritative while a host is connected, §4.7).
+  A `has_been_queried` bool is set on the first `QUERY_INFO` serviced
+  (§4.6 handshake timing). `apply_host_callbacks` mirrors the board's
+  disable-before-enable ordering: disable newly-out-of-set ids (fire their
+  `on_disable`), then enable newly-in-set ids (fire their `on_enable`).
+- **Backward compatibility:** legacy string sends have `data[2]` = a printable
+  char (never `0xF0`), so the dispatch is transparent to round-A firmware and to
+  keymaps that never use host rules. `0xF0` can never begin a real matched string
+  (sanitizer allows only `0x20–0x7E`), so legacy firmware safely ignores typed
+  commands; typed responses use marker `0x51` (≥2), distinct from the legacy
+  `0`/`1` match-bool.
 
-**B2 — Full host-rule replacement (divergence from `qmkonnect/PRPs/002` — OPEN).**
-The maintainer's current intent is that **when a host ruleset is present, the
-firmware ignores its onboard `DEFINE_*` / `DEFINE_*_OS` maps entirely and
-layers/callbacks are driven solely by the host** (host provides the full layer +
-enabled-callback set). ⚠️ **This diverges from the existing host-rules PRP**
-(`dabstractor/qmkonnect/PRPs/002-host-rules-and-callbacks.md`), which specifies
-**stack** semantics (host rules stack *on top of* board rules; board layer first,
-host layer above). **This divergence is unresolved** and must be reconciled
-(stack vs replace, and how it interacts with per-OS board maps) in the B-cycle
-before any of B is implemented. It is recorded here only so the current (A)
-design preserves the option.
+**What round A already preserves for round B (non-breaking):**
 
-**What A already preserves for B (non-breaking):**
-- A consumes **only** the legacy string path and the `os_variant_t` type; it
-  touches neither the `0xF0` discriminator nor any future `host_layer`/
-  host-callback state. A future B can add typed-command dispatch at the top of
-  `hid_notify()` (as the host-rules PRP already sketches) without conflict.
-- A's `current_os` is a single well-defined injection point (`notifier_set_os`);
-  B can replace its source (host value instead of `OS_DETECTION`) at that one
-  seam.
-- A's per-OS maps are ordinary board maps; under B2-replace they would simply go
-  unused while a host ruleset is active, and re-engage when the host is absent
-  (graceful offline fallback) — no structural change required.
+- Round A consumes only the legacy string path + the `os_variant_t` type; it
+  touches neither the `0xF0` discriminator nor the `host_layer`/host-callback
+  state. Round B adds typed dispatch at the top of `hid_notify()` without
+  conflict.
+- `current_os` is a single seam (`notifier_set_os`); round B's `SET_OS` feeds the
+  same variable (authoritative when a host is connected, §4.7).
+- Round-A per-OS maps are ordinary board maps; under a replace-window they are
+  simply cleared for that window and re-engage on the next string send — no
+  structural change.
+
+### 14.1 Resolved divergences (formerly B1/B2, OPEN)
+
+The two open items previously captured here are now closed and folded into the
+spec:
+
+- **B1 (host-provided OS)** → resolved: `SET_OS` (`0x03`) is **specified for
+  round B** (§4.6, §4.7). The host declares its OS at connect; while connected it
+  is authoritative for `current_os`, taking precedence over the `OS_DETECTION`
+  heuristic, which resumes as the offline fallback. The old "HELD — next cycle"
+  framing is superseded.
+- **B2 (stack vs replace)** → resolved: the firmware offers **both** and the host
+  selects per window via the `clear_board` flag (§4.6, §14). The stale reference
+  to `dabstractor/qmkonnect/PRPs/002-host-rules-and-callbacks.md` (which no
+  longer exists — the live artifact is `qmkonnect/spec/HOST_RULES.md`) is
+  withdrawn; `HOST_RULES.md` now specifies the host-side `disable_firmware_config`
+  rule that drives `clear_board`.
 
 ---
 
@@ -1550,11 +1672,14 @@ Verified against the live test suite (`/tmp/probe` harness, §11.2C style).
 | Usage | `0x61` | QMK `RAW_USAGE_ID` | auto-discovery primary id |
 | `NFA_MAX_PATTERN` | `128` | pattern_match.c | max processed-pattern length |
 | `NFA_MAX_STATES` | `2*128+2=258` | pattern_match.c | NFA state-pool cap |
-| Request discriminator (planned) | `0xF0` | v0.3.0 | typed-command marker (after `0x81 0x9F`) |
-| Response marker (planned) | `0x51` | v0.3.0 | typed-response marker (vs legacy `0`/`1`) |
+| Request discriminator (round B) | `0xF0` | §4.6 | typed-command marker (after `0x81 0x9F`) |
+| Response marker (round B) | `0x51` | §4.6 | typed-response marker (vs legacy `0`/`1`) |
 | `current_os` init | `OS_UNSURE` (0) | notifier.c | no OS known ⇒ default maps only |
 | OS enum | `os_variant_t` | `os_detection.h` (QMK) | `OS_UNSURE/0 OS_LINUX/1 OS_WINDOWS/2 OS_MACOS/3 OS_IOS/4` — reused, not redefined |
-| `SET_OS` typed cmd (HELD) | `0xF0` + `0xNN` | §14.1 B1 | reserved, NOT implemented |
+| `SET_OS` typed cmd | `0x03` | §4.6, §4.7 | host-authoritative OS; round B |
+| `proto_ver` | `1` (legacy / multi-OS), `2` (round B) | §4.6 | protocol version (firmware-owned) |
+| `APPLY_HOST_CONTEXT` `clear_board` | flags bit 0 | §4.6 | clear board layer/cmd before applying host context |
+| Host layer block | `≥ 224` | §4.6, §14 | host layers resolve above board layers (`255 = LAYER_UNSET`) |
 
 Placeholder bytes (processed pattern, §7.1): `0x01–0x04` escaped literals
 (`^ $ * \`), `0x05–0x0A` classes (`\d \D \w \W \s \S`), `0x0B/0x0C`
@@ -1621,7 +1746,8 @@ following hold:
       selects the OS map first (default fallback) per track, clears state on OS
       change, and degrades to default-only under `OS_UNSURE` — while a
       default-only keymap behaves byte-identically to the pre-multi-OS firmware.
-- [ ] No HELD-for-next-cycle item (§4.7, §14.1) is implemented.
+- [ ] No round-B item (§4.6 typed commands, §4.7 `SET_OS`, §14 host-rules
+      trackers / `DEFINE_HOST_CALLBACKS`) is implemented in this round-A rebuild.
 
 ---
 
