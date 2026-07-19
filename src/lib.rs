@@ -273,10 +273,28 @@ pub fn parse_cli_args() -> Result<RunParameters, QmkError> {
     ))
 }
 
-/// Core function that executes the notifier logic with explicit parameters.
-pub fn run(params: RunParameters) -> Result<(), QmkError> {
+/// Execute the notifier logic for the given command and parameters.
+///
+/// Returns a [`CommandResponse`] describing the device's reply, or a
+/// [`QmkError`] on transport failure (PRD §3 *Public API*, §10 *Typed-Command
+/// Transport*). The response shape depends on the command:
+///
+/// - [`RunCommand::SendMessage`] → [`CommandResponse::Legacy`] as a
+///   **placeholder** (`matched: true`) until real reply parsing lands in
+///   P1.M3.T3; the firmware's `response[0]` match-bool will be decoded there.
+/// - [`RunCommand::ListDevices`] → [`CommandResponse::Timeout`]: no device
+///   reply was captured because nothing was sent over the wire (list-only path).
+/// - Typed variants (`QueryInfo`/`QueryCallback`/`SetOs`/`ApplyHostContext`)
+///   are stubbed with `todo!()` until full dispatch + reply capture land in
+///   P1.M3.T3.
+pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError> {
     match params.command {
-        RunCommand::ListDevices => list_hid_devices(),
+        RunCommand::ListDevices => {
+            list_hid_devices()?;
+            // Semantic: no device reply was received — nothing was sent.
+            // Real reply capture arrives in P1.M3.T1/T3; ListDevices never sends.
+            Ok(CommandResponse::Timeout)
+        }
         RunCommand::SendMessage(message) => {
             if params.verbose {
                 let vid = params
@@ -307,6 +325,10 @@ pub fn run(params: RunParameters) -> Result<(), QmkError> {
                 );
             }
 
+            // send_raw_report STILL returns Result<(), QmkError> at this stage
+            // (its evolution to Result<Option<Vec<u8>>, QmkError> is P1.M3.T2).
+            // On success we return the placeholder Legacy{matched:true}; the
+            // real response[0] match-bool is decoded in P1.M3.T3 via parse_reply.
             send_raw_report(
                 &input_with_terminator,
                 params.vendor_id,
@@ -314,14 +336,16 @@ pub fn run(params: RunParameters) -> Result<(), QmkError> {
                 params.usage_page,
                 params.usage,
                 params.verbose,
-            )
+            )?;
+
+            Ok(CommandResponse::Legacy { matched: true })
         }
 
-        // --- Typed-command stubs. Dispatch + reply handling land in P1.M3.T3.S1;
-        // run()'s return type changes to `Result<CommandResponse, QmkError>` in
-        // P1.M1.T2.S2. `todo!()` keeps this match exhaustive so the crate
-        // compiles today. Existing tests only construct ListDevices/SendMessage
-        // and never reach these arms. Do NOT wire real logic here. ---
+        // --- Typed-command stubs. Dispatch + reply handling land in P1.M3.T3.S1.
+        // `todo!()` expands to `!` (never), which coerces to CommandResponse, so
+        // these arms compile UNCHANGED under the new signature. Do NOT wire real
+        // logic here. Existing tests only construct ListDevices/SendMessage and
+        // never reach these arms. ---
         RunCommand::QueryInfo => todo!("typed dispatch lands in P1.M3.T3.S1"),
         RunCommand::QueryCallback(_) => todo!("typed dispatch lands in P1.M3.T3.S1"),
         RunCommand::SetOs(_) => todo!("typed dispatch lands in P1.M3.T3.S1"),
@@ -524,8 +548,10 @@ mod tests {
         // This will likely fail with DeviceNotFound unless the exact device exists
         let result = run(params);
         match result {
-            Ok(()) => {
-                // This is also acceptable if a device is connected
+            Ok(_) => {
+                // Success is also acceptable if a device is connected. The
+                // placeholder path returns CommandResponse::Legacy { matched: true };
+                // we deliberately do NOT assert its shape here (no hardware in CI).
             }
             Err(QmkError::DeviceNotFound { .. }) => {
                 // Expected when no devices are found

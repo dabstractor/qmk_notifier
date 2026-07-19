@@ -8,9 +8,12 @@ fn main() {
         }
     };
 
-    // Call the run function with parsed parameters
-    if let Err(e) = qmk_notifier::run(params) {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
+    // Call the run function with parsed parameters and print the CommandResponse.
+    match qmk_notifier::run(params) {
+        Ok(response) => println!("{:?}", response),
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
     }
 }
