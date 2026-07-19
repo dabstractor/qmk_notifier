@@ -71,14 +71,14 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Add framing constants and evolve run() signature",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add typed-command wire constants to core.rs and change run() to return Result<CommandResponse, QmkError>. After this task, the crate compiles with the new return type, existing tests are updated, and typed-command variants have stub arms awaiting real dispatch logic in M3.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Add typed-command constants to core.rs",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md §Constants — exact values from notifier.h. See also plan/001_b92a9b2b603f/architecture/transport_evolution.md §New Constants.\n2. INPUT: No dependencies. These are standalone constants in src/core.rs.\n3. LOGIC: Add these constants to src/core.rs near the existing constants (DEFAULT_USAGE_PAGE, REPORT_LENGTH, etc.):\n   ```rust\n   /// Typed-command discriminator: first payload byte after 0x81 0x9F (PRD §10.1).\n   pub(crate) const CMD_DISCRIMINATOR: u8 = 0xF0;\n   /// Typed-response marker: response[0] == 0x51 means typed reply (PRD §10.2).\n   pub(crate) const RESPONSE_MARKER: u8 = 0x51;\n   /// Command IDs from firmware PRD §4.6 command table.\n   pub(crate) const CMD_QUERY_INFO: u8 = 0x01;\n   pub(crate) const CMD_QUERY_CALLBACK: u8 = 0x02;\n   pub(crate) const CMD_SET_OS: u8 = 0x03;\n   pub(crate) const CMD_APPLY_HOST_CONTEXT: u8 = 0x05;\n   /// Bounded timeout (ms) for reading the first reply after a burst.\n   /// Must be > 0 (unlike the drain's non-blocking timeout=0).\n   const REPLY_READ_TIMEOUT_MS: i32 = 1000;\n   ```\n   Use `pub(crate)` visibility — these are internal transport constants, not part of the public API. Add a unit test asserting the constant values match the firmware contract.\n4. OUTPUT: Constants in core.rs, consumable by build_command_data (P1.M2.T1), parse_reply (P1.M2.T2), and burst_to_one (P1.M3.T1).\n5. DOCS: none — internal constants with no user-facing/config/API surface change.",
@@ -92,7 +92,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Change run() to return CommandResponse and fix existing tests",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S3"

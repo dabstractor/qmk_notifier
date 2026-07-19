@@ -9,6 +9,40 @@ pub const DEFAULT_USAGE_PAGE: u16 = 0xFF60;
 pub const DEFAULT_USAGE: u16 = 0x61;
 pub const REPORT_LENGTH: usize = 32;
 
+// --- Typed-command transport constants (v0.3.0) -----------------------------
+// Wire vocabulary for the typed-command path (PRD §10.1, §10.2). Mirror of the
+// firmware `notifier.h` #defines (canonicalized in
+// `plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md` §Constants).
+// `pub(crate)` (not `pub`): internal transport constants, NOT public API.
+//
+// NOTE: each constant carries a temporary `#[allow(dead_code)]`. The consumers
+// land in later subtasks — build_command_data (P1.M2.T1), parse_reply
+// (P1.M2.T2), and burst_to_one's reply capture (P1.M3.T1) — so until then no
+// non-test code references them and rustc would otherwise emit dead_code
+// warnings (verified: even `pub(crate)` items warn, and a `#[cfg(test)]`-only
+// reference does NOT silence them in `cargo build`). REMOVE each allow when its
+// constant gains a real consumer.
+
+/// Typed-command discriminator: first payload byte after 0x81 0x9F (PRD §10.1).
+#[allow(dead_code)]
+pub(crate) const CMD_DISCRIMINATOR: u8 = 0xF0;
+/// Typed-response marker: response[0] == 0x51 means typed reply (PRD §10.2).
+#[allow(dead_code)]
+pub(crate) const RESPONSE_MARKER: u8 = 0x51;
+/// Command IDs from firmware PRD §4.6 command table.
+#[allow(dead_code)]
+pub(crate) const CMD_QUERY_INFO: u8 = 0x01;
+#[allow(dead_code)]
+pub(crate) const CMD_QUERY_CALLBACK: u8 = 0x02;
+#[allow(dead_code)]
+pub(crate) const CMD_SET_OS: u8 = 0x03;
+#[allow(dead_code)]
+pub(crate) const CMD_APPLY_HOST_CONTEXT: u8 = 0x05;
+/// Bounded timeout (ms) for reading the first reply after a burst.
+/// Must be > 0 (unlike the drain's non-blocking timeout=0).
+#[allow(dead_code)]
+const REPLY_READ_TIMEOUT_MS: i32 = 1000;
+
 pub fn parse_hex_or_decimal(input: &str) -> Result<u16, QmkError> {
     if input.starts_with("0x") || input.starts_with("0X") {
         u16::from_str_radix(&input[2..], 16).map_err(|e| QmkError::InvalidHexValue(e.to_string()))
@@ -563,5 +597,34 @@ mod tests {
         };
         assert_eq!(auto, auto);
         assert_ne!(auto, explicit);
+    }
+
+    #[test]
+    fn typed_command_constants_match_firmware_contract() {
+        // Wire-protocol values are the canonical source of truth from the firmware
+        // notifier.h (see firmware_wire_contract.md §Constants). Drift here would
+        // silently break host<->firmware interop, so pin every value.
+        assert_eq!(
+            CMD_DISCRIMINATOR, 0xF0,
+            "NOTIFY_CMD_DISCRIMINATOR: typed-command first payload byte after 0x81 0x9F"
+        );
+        assert_eq!(
+            RESPONSE_MARKER, 0x51,
+            "NOTIFY_RESPONSE_MARKER: response[0]==0x51 means typed reply"
+        );
+        assert_eq!(CMD_QUERY_INFO, 0x01, "NOTIFY_CMD_QUERY_INFO");
+        assert_eq!(CMD_QUERY_CALLBACK, 0x02, "NOTIFY_CMD_QUERY_CALLBACK");
+        assert_eq!(CMD_SET_OS, 0x03, "NOTIFY_CMD_SET_OS");
+        assert_eq!(
+            CMD_APPLY_HOST_CONTEXT, 0x05,
+            "NOTIFY_CMD_APPLY_HOST_CONTEXT"
+        );
+        // REPLY_READ_TIMEOUT_MS is a host-side choice (bounded blocking read of the
+        // first reply after a burst), NOT a firmware value. Its invariant is the
+        // documented "Must be > 0" (unlike the drain loop's non-blocking 0).
+        assert!(
+            REPLY_READ_TIMEOUT_MS > 0,
+            "reply read timeout must block for a real reply, not poll like the drain's 0"
+        );
     }
 }
