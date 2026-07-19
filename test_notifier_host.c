@@ -44,10 +44,17 @@ const uint8_t *stub_get_last_response(void);
  * can discover both names. on_enable/on_disable set flags S3 (APPLY_HOST_CONTEXT)
  * will assert; here the flags also prove QUERY_* fired NO host callback. */
 static int cb_mute_en = 0, cb_mute_dis = 0, cb_layout_en = 0, cb_layout_dis = 0;
-static void cb_mute_on(void)    { cb_mute_en++; }
-static void cb_mute_off(void)   { cb_mute_dis++; }
-static void cb_layout_on(void)  { cb_layout_en++; }
-static void cb_layout_off(void) { cb_layout_dis++; }
+/* Sequence stamps (P1.M3.T1.S3 callback-diff ordering test vii): plain counters
+ * can't show disable-before-enable ORDER, so each callback records a monotonic
+ * g_seq at call time. Backward-compatible — the _en/_dis counters STILL
+ * increment, so S2's `cb_*_en==0` assertions after QUERY_* still hold (the _seq
+ * vars stay 0 there). */
+static int g_seq = 0;
+static int cb_mute_on_seq = 0, cb_mute_off_seq = 0, cb_layout_on_seq = 0, cb_layout_off_seq = 0;
+static void cb_mute_on(void)    { cb_mute_en++;    cb_mute_on_seq    = ++g_seq; }
+static void cb_mute_off(void)   { cb_mute_dis++;   cb_mute_off_seq   = ++g_seq; }
+static void cb_layout_on(void)  { cb_layout_en++;  cb_layout_on_seq  = ++g_seq; }
+static void cb_layout_off(void) { cb_layout_dis++; cb_layout_off_seq = ++g_seq; }
 DEFINE_HOST_CALLBACKS({
     { "mute",   cb_mute_on,  cb_mute_off  },
     { "layout", cb_layout_on, cb_layout_off },
@@ -62,6 +69,22 @@ DEFINE_SERIAL_COMMANDS({
 });
 DEFINE_SERIAL_LAYERS({
     { "neovide", 5, false },
+});
+
+/* --- OS_MACOS maps (P1.M3.T1.S3 SET_OS OS-map-selection test ii) ---
+ * "iTerm" exists ONLY in the OS_MACOS maps (not in the default "neovide" maps
+ * above), so it matches the OS-specific map iff current_os==OS_MACOS. These maps
+ * are inert until SET_OS flips current_os — exactly what test (ii) asserts.
+ * Mirror S2's rows including the trailing `false` (case_sensitive) to avoid
+ * -Wmissing-field-initializers under -Wextra. */
+static int mac_cmd_en = 0, mac_cmd_dis = 0;
+static void mac_cmd_on(void)  { mac_cmd_en++; }
+static void mac_cmd_off(void) { mac_cmd_dis++; }
+DEFINE_SERIAL_COMMANDS_OS(OS_MACOS, {
+    { "iTerm", mac_cmd_on, mac_cmd_off, false },
+});
+DEFINE_SERIAL_LAYERS_OS(OS_MACOS, {
+    { "iTerm", 44, false },
 });
 
 static int g_pass = 0, g_fail = 0;
@@ -151,6 +174,138 @@ int main(void) {
      * these flags also guarantees no unused-symbol warnings under -Wextra. */
     CK(cb_mute_en == 0 && cb_mute_dis == 0 && cb_layout_en == 0 && cb_layout_dis == 0,
                                                               "QUERY_INFO/QUERY_CALLBACK fired no host callback (read-only queries) [§4.6]");
+
+    /* ================================================================ */
+    /* ===== P1.M3.T1.S3 — SET_OS (0x03) contract blocks (i-iv) ======== */
+    /* ================================================================ */
+    /* 🚨 VERIFIED BLOCKER (research/findings.md): SET_OS cmd_id 0x03 == ETX 0x03.
+     * hid_notify's byte loop dispatches on the cmd_id byte, so handle_typed_command
+     * sees cmd_id=0 (default case) and the SET_OS handler NEVER runs. OS_MACOS==3
+     * makes the os_byte ALSO collide. These four blocks are written CORRECTLY per
+     * the §4.6/§4.7 contract; they FAIL against the current notifier.c with the
+     * documented signatures, surfacing the upstream framing flaw (owned by P1.M2).
+     * Do NOT weaken the assertions to mask it. */
+
+    /* ===== (i) SET_OS response layout — §4.6 ===== */
+    {
+        uint8_t os = OS_MACOS;
+        const uint8_t *r = send_typed(NOTIFY_CMD_SET_OS, &os, 1);
+        CK(r[0] == NOTIFY_RESPONSE_MARKER,                  "(i) SET_OS r[0]=0x51 marker [§4.6]");
+        CK(r[1] == NOTIFY_CMD_SET_OS,                       "(i) SET_OS r[1]=0x03 cmd echo [§4.6]");
+        CK(r[2] == 1,                                       "(i) SET_OS r[2]=ack=1 [§4.6]");
+    }
+
+    /* ===== (ii) SET_OS changes current_os (OS_MACOS map now selected) — §4.7 =====
+     * "iTerm" matches ONLY the OS_MACOS map. Before SET_OS (current_os==OS_UNSURE)
+     * it must NOT fire; after SET_OS(OS_MACOS) it must fire mac_cmd and select
+     * OS_MACOS layer 44 — proving current_os changed and the OS map is selected. */
+    {
+        /* before SET_OS: OS_MACOS-only pattern does not match at OS_UNSURE */
+        mac_cmd_en = mac_cmd_dis = 0;
+        { char m[] = "iTerm"; process_full_message(m); }
+        CK(mac_cmd_en == 0,                                 "(ii) pre-SET_OS: OS_MACOS-only pattern does not match at OS_UNSURE [§4.7]");
+
+        /* SET_OS(OS_MACOS) -> current_os=OS_MACOS */
+        uint8_t os = OS_MACOS; (void)send_typed(NOTIFY_CMD_SET_OS, &os, 1);
+
+        mac_cmd_en = mac_cmd_dis = 0;
+        { char m[] = "iTerm"; process_full_message(m); }
+        CK(mac_cmd_en == 1,                                 "(ii) post-SET_OS(OS_MACOS): OS_MACOS command fired (current_os changed) [§4.7]");
+        CK(stub_get_active_layer() == 44,                   "(ii) post-SET_OS(OS_MACOS): OS_MACOS layer 44 selected [§4.7]");
+    }
+
+    /* ===== (iii) SET_OS change fires F9 clear — §4.7 / F9 =====
+     * Mirror test_notifier_os.c (v): establish board state, SET_OS to a DIFFERENT
+     * OS => prev command on_disable + layer deactivated + no re-dispatch. Note
+     * current_os may be OS_UNSURE here if (ii) was blocked; SET_OS(OS_LINUX) is a
+     * CHANGED os from OS_UNSURE regardless, so the F9 clear still applies IF the
+     * handler runs (it won't, under the blocker). */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        { char m[] = "neovide"; process_full_message(m); }  /* board layer 5 + board cmd */
+        CK(stub_get_active_layer() == 5,                    "(iii) setup: board layer 5 active");
+        CK(board_cmd_en == 1,                               "(iii) setup: board command enabled");
+
+        board_cmd_dis = 0;
+        uint8_t os = OS_LINUX; (void)send_typed(NOTIFY_CMD_SET_OS, &os, 1);  /* CHANGED os => clear */
+        CK(board_cmd_dis == 1,                              "(iii) SET_OS change: prev command on_disable fired [§4.7/F9.1]");
+        CK(stub_get_active_layer() == 255,                  "(iii) SET_OS change: board layer deactivated (cleared) [§4.7/F9.1]");
+        CK(board_cmd_en == 0 || board_cmd_en == 1,          "(iii) SET_OS change: no re-dispatch (on_enable not re-fired) [§4.7/F9.2]");
+    }
+
+    /* ===== (iv) SET_OS idempotent — §4.7 / F9.3 =====
+     * Mirror test_notifier_os.c (iv): SET_OS to the SAME os => no spurious
+     * on_disable, no layer change. */
+    {
+        board_cmd_dis = 0;
+        uint8_t os = OS_LINUX; (void)send_typed(NOTIFY_CMD_SET_OS, &os, 1);  /* SAME os */
+        CK(board_cmd_dis == 0,                              "(iv) SET_OS idempotent: no spurious on_disable on same-OS [§4.7/F9.3]");
+        CK(stub_get_active_layer() == 255,                  "(iv) SET_OS idempotent: no layer change on same-OS [§4.7/F9.3]");
+    }
+
+    /* ================================================================ */
+    /* ===== P1.M3.T1.S3 — APPLY_HOST_CONTEXT (0x05) blocks (v-viii) === */
+    /* ================================================================ */
+    /* cmd 0x05 != ETX, and none of these args (224/0/1/0xFF, ids 0/1) equal 0x03,
+     * so all four blocks PASS against the current notifier.c. Gotcha: the stub
+     * models layers as a SINGLE g_active_layer, so stub_get_active_layer()==224
+     * in BOTH stack and replace — the DISTINGUISHER is board_cmd_dis (0 vs 1). */
+
+    /* ===== (v) STACK (clear_board=0): board preserved + host layer active — §14 ===== */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        { char m[] = "neovide"; process_full_message(m); }  /* board layer 5 + board cmd */
+        CK(stub_get_active_layer() == 5,                    "(v) setup: board layer 5 active");
+
+        board_cmd_dis = 0;
+        uint8_t a[] = { 224, 0x00, 0 };                     /* layer=224, flags=0 (clear_board=0), count=0 */
+        (void)send_typed(NOTIFY_CMD_APPLY_HOST_CONTEXT, a, 3);
+        CK(stub_get_active_layer() == 224,                  "(v) stack: host layer 224 active (highest-layer-wins) [§14]");
+        CK(board_cmd_dis == 0,                              "(v) stack: board command NOT torn down (clear_board=0) [§14]");
+    }
+
+    /* ===== (vi) REPLACE (clear_board=1): board torn down + host layer active — §14 ===== */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        { char m[] = "neovide"; process_full_message(m); }  /* board layer 5 + board cmd */
+        CK(stub_get_active_layer() == 5,                    "(vi) setup: board layer 5 active");
+
+        board_cmd_dis = 0;
+        uint8_t a[] = { 224, 0x01, 0 };                     /* layer=224, flags=0x01 (clear_board=1), count=0 */
+        (void)send_typed(NOTIFY_CMD_APPLY_HOST_CONTEXT, a, 3);
+        CK(board_cmd_dis == 1,                              "(vi) replace: board command torn down (clear_board=1) [§14]");
+        CK(stub_get_active_layer() == 224,                  "(vi) replace: host layer 224 active [§14]");
+    }
+
+    /* ===== (vii) callback diff ordering (disable-before-enable) — §14 =====
+     * Enable id 0 only, then switch to id 1 only. Phase 1 disables id 0
+     * (on_disable) BEFORE Phase 2 enables id 1 (on_enable) — observable via the
+     * sequence stamps: cb_mute_off_seq==1, cb_layout_on_seq==2. */
+    {
+        /* enable id 0 only */
+        g_seq = 0; cb_mute_en = cb_mute_dis = cb_layout_en = cb_layout_dis = 0;
+        cb_mute_on_seq = cb_mute_off_seq = cb_layout_on_seq = cb_layout_off_seq = 0;
+        { uint8_t a[] = { 224, 0x00, 1, 0 }; (void)send_typed(NOTIFY_CMD_APPLY_HOST_CONTEXT, a, 4); }
+        CK(cb_mute_en == 1,                                 "(vii) AHC{[0]}: on_enable fired for id 0 [§14]");
+
+        /* switch to id 1 only -> id 0 disabled, id 1 enabled */
+        g_seq = 0; cb_mute_on_seq = cb_mute_off_seq = cb_layout_on_seq = cb_layout_off_seq = 0;
+        { uint8_t a[] = { 224, 0x00, 1, 1 }; (void)send_typed(NOTIFY_CMD_APPLY_HOST_CONTEXT, a, 4); }
+        CK(cb_mute_dis == 1,                                "(vii) AHC{[1]}: on_disable fired for id 0 [§14]");
+        CK(cb_layout_en == 1,                               "(vii) AHC{[1]}: on_enable fired for id 1 [§14]");
+        CK(cb_mute_off_seq == 1 && cb_layout_on_seq == 2,
+                                                            "(vii) AHC{[1]}: on_disable(id0) BEFORE on_enable(id1) [§14 disable-before-enable]");
+    }
+
+    /* ===== (viii) APPLY_HOST_CONTEXT{layer=0xFF} clears host layer — §14 ===== */
+    {
+        /* establish a host layer with NO competing board layer (fresh: board is LAYER_UNSET) */
+        { uint8_t a[] = { 224, 0x00, 0 }; (void)send_typed(NOTIFY_CMD_APPLY_HOST_CONTEXT, a, 3); }
+        CK(stub_get_active_layer() == 224,                  "(viii) setup: host layer 224 active");
+
+        { uint8_t a[] = { 0xFF, 0x00, 0 }; (void)send_typed(NOTIFY_CMD_APPLY_HOST_CONTEXT, a, 3); }
+        CK(stub_get_active_layer() == 255,                  "(viii) AHC{layer=0xFF}: host layer cleared (LAYER_UNSET) [§14]");
+    }
 
     printf("\nTotal tests run: %d / passed: %d / failed: %d\n", g_pass + g_fail, g_pass, g_fail);
     return g_fail ? 1 : 0;

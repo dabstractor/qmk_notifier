@@ -230,7 +230,7 @@
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Stub response capture + test_notifier_host.c",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Extend the stub harness to capture the full 32-byte response for typed-response assertions, then write the dedicated host test suite covering all typed-command and host-rules categories.",
               "subtasks": [
                 {
@@ -270,7 +270,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S3",
                   "title": "Add SET_OS + APPLY_HOST_CONTEXT (stack/replace) test cases to test_notifier_host.c",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M3.T1.S2"
@@ -287,7 +287,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S4",
                   "title": "Add coexistence/backward-compat + multi-report typed framing test cases to test_notifier_host.c",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T1.S3"
