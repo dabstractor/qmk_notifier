@@ -1,0 +1,33 @@
+h1.0 SPECIFICATION — qmk_notifier (Rust Raw-HID transport crate)
+ h2.0 Table of Contents
+ h2.1 1. Product Overview
+  h3.0 1.1 What qmk_notifier is
+  h3.1 1.2 The broader ecosystem (a dev must understand all three)
+ h2.2 2. Repository Layout & Deliverables
+ h2.3 3. Public API
+ h2.4 4. Wire Protocol — Transport Side
+  h3.2 4.1 The logical payload
+  h3.3 4.2 On-the-wire report layout (what hidapi::HidDevice::write receives)
+  h3.4 4.3 Burst-write is safe without per-report ACK
+  h3.5 4.4 Replies are received (historical note)
+ h2.5 5. Device Discovery & Matching
+  h3.6 5.1 The match predicate (pure)
+  h3.7 5.2 open_matching_devices(api, key)
+  h3.8 5.3 list_hid_devices()
+ h2.6 6. Device Cache
+ h2.7 7. Send Path, Burst-Write & Retry
+  h3.9 7.1 send_raw_report(data, vid, pid, page, usage, verbose)
+  h3.10 7.2 try_send_once(key, data, batch_count, verbose)
+  h3.11 7.3 burst_to_one(interface, data, batch_count, verbose) -> bool
+ h2.8 8. Response Handling
+ h2.9 9. Error Model
+ h2.10 10. Typed-Command Transport
+  h3.12 10.1 Framing
+  h3.13 10.2 Reply parsing
+  h3.14 10.3 What stays out of this crate
+ h2.11 11. CLI
+ h2.12 12. Non-Functional Requirements
+ h2.13 13. Versioning, Release & Cross-Repo Links
+ h2.14 14. Key Invariants a Dev Agent Must Preserve
+---
+code:7 para:34 list:11 table:3 quote:4

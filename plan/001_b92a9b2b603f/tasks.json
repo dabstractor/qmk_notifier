@@ -1,0 +1,299 @@
+{
+  "backlog": [
+    {
+      "type": "Phase",
+      "id": "P1",
+      "title": "v0.3.0 Typed-Command Transport",
+      "status": "Planned",
+      "description": "Upgrade the qmk_notifier crate from v0.2.1 (legacy string-send only, replies discarded) to v0.3.0 (typed-command transport + reply parsing). This is the complete delta described in PRD.md §3 and §10: new RunCommand variants (QueryInfo, QueryCallback, SetOs, ApplyHostContext), HostOs enum, CommandResponse enum, typed-command framing [0x81][0x9F][0xF0][cmd][args][0x03], reply parsing (0x51 typed vs 0/1 legacy vs timeout), evolved burst_to_one/send_raw_report to capture replies, run() returns CommandResponse, dependency cleanup, version bump, and documentation sync.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P1.M1",
+          "title": "Type Contracts & Framing Constants",
+          "status": "Planned",
+          "description": "Establish the foundational type contracts that all downstream work depends on: HostOs enum, extended RunCommand with typed variants, CommandResponse enum, typed-command wire constants, and the run() signature change to return CommandResponse. After this milestone the crate compiles with all new types in place, run() returns CommandResponse (with placeholder/stub logic for typed commands), and existing tests are updated to match the new return type.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M1.T1",
+              "title": "Add typed-command public API types to lib.rs",
+              "status": "Planned",
+              "description": "Add the HostOs enum, extend RunCommand with typed variants, and add the CommandResponse enum. These are the public API surface types defined in PRD §3.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S1",
+                  "title": "Add HostOs enum to lib.rs",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.3", "h2.10/h3.12"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md — the os_variant_t values are 0=UNSURE, 1=LINUX, 2=WINDOWS, 3=MACOS, 4=IOS. See also notifier.h NOTIFY_CMD_SET_OS. The HostOs enum mirrors QMK's os_variant_t exactly.\n2. INPUT: No dependencies. This is a new standalone type in src/lib.rs.\n3. LOGIC: Add to src/lib.rs (after the existing RunCommand enum definition). Implement:\n   ```rust\n   /// Host operating system, mirrors QMK's `os_variant_t`.\n   /// Sent via SET_OS (cmd 0x03) to declare the host OS at connect.\n   #[repr(u8)]\n   #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n   pub enum HostOs {\n       Unsure = 0,\n       Linux = 1,\n       Windows = 2,\n       Macos = 3,\n       Ios = 4,\n   }\n   ```\n   The `#[repr(u8)]` is critical — `as u8` cast produces the wire byte. Add a unit test asserting each discriminant value matches the firmware contract.\n4. OUTPUT: A public `HostOs` type in lib.rs, consumable by RunCommand::SetOs variant (next subtask) and build_command_data (P1.M2.T1).\n5. DOCS: [Mode A] Add JSDoc-style doc comments on the enum and each variant (shown above). No separate docs file needed — this is an internal type addition with no config/API surface change beyond the type itself."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S2",
+                  "title": "Extend RunCommand enum with typed-command variants",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": ["h2.3", "h2.10/h3.12", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md §Command Table for exact cmd_ids and argument layouts. The RunCommand enum currently has only SendMessage(String) and ListDevices. It is defined in src/lib.rs around line 21.\n2. INPUT: Depends on P1.M1.T1.S1 (HostOs enum must exist for SetOs variant).\n3. LOGIC: Extend the existing `pub enum RunCommand` in src/lib.rs to add four new variants per PRD §3:\n   ```rust\n   pub enum RunCommand {\n       SendMessage(String),\n       ListDevices,\n       QueryInfo,                                              // cmd 0x01\n       QueryCallback(u8),                                      // cmd 0x02, arg = index\n       SetOs(HostOs),                                          // cmd 0x03\n       ApplyHostContext { layer: Option<u8>, callbacks: Vec<u8>, clear_board: bool }, // cmd 0x05\n   }\n   ```\n   For ApplyHostContext: `layer = None` means 0xFF (clear host layer); `Some(n)` means host-layer number (>=224 by convention). `callbacks` is the full desired enabled callback-id set. `clear_board = true` means set the firmware clear_board flag bit.\n   Add #[derive(Debug, Clone)] to match existing derives.\n   IMPORTANT: This will cause a compile error in run() because the match is no longer exhaustive. That is expected — P1.M1.T2.S2 adds the stub arms. If you need the crate to compile before T2, add temporary `todo!()` arms. Add unit tests for the new variants' construction.\n4. OUTPUT: Extended RunCommand enum. Consumed by build_command_data (P1.M2.T1) and run() dispatch (P1.M3.T3).\n5. DOCS: [Mode A] Doc-comment each variant referencing the cmd_id and PRD §10.1. No separate docs file — the public API doc comments are the documentation."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S3",
+                  "title": "Add CommandResponse enum to lib.rs",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.3", "h2.8", "h2.10/h3.13", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md §Reply Disambiguation and §Field Definitions for exact byte layouts. response[0]==0x51 means typed reply (decode by response[1] cmd echo); response[0] in {0,1} means legacy match-bool; no reply means Timeout.\n2. INPUT: No hard dependencies (standalone type). Logically belongs alongside RunCommand in src/lib.rs.\n3. LOGIC: Add to src/lib.rs (after RunCommand):\n   ```rust\n   /// Parsed device reply (see PRD §8, §10.2).\n   #[derive(Debug, Clone, PartialEq, Eq)]\n   pub enum CommandResponse {\n       /// Legacy string reply: response[0] is 0 (no match) or 1 (matched).\n       Legacy { matched: bool },\n       /// QUERY_INFO reply: [0x51][0x01][proto_ver][feature_flags][callback_count][board_rules_present]\n       Info {\n           proto_ver: u8,\n           feature_flags: u8,\n           callback_count: u8,\n           board_rules_present: bool,\n       },\n       /// QUERY_CALLBACK reply: [0x51][0x02][index][name NUL-padded].\n       /// name is None when the callback has no name or index is out of range.\n       CallbackName { index: u8, name: Option<String> },\n       /// SET_OS / APPLY_HOST_CONTEXT reply: [0x51][cmd_echo][ack].\n       Ack { ok: bool },\n       /// No reply within the read timeout (device is legacy/offline).\n       Timeout,\n   }\n   ```\n   Add unit tests verifying construction of each variant.\n4. OUTPUT: Public CommandResponse type. Consumed by run() return type (P1.M1.T2.S2) and parse_reply (P1.M2.T2).\n5. DOCS: [Mode A] Doc-comment each variant referencing the wire byte layout from PRD §10.2. No separate docs file."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T2",
+              "title": "Add framing constants and evolve run() signature",
+              "status": "Planned",
+              "description": "Add typed-command wire constants to core.rs and change run() to return Result<CommandResponse, QmkError>. After this task, the crate compiles with the new return type, existing tests are updated, and typed-command variants have stub arms awaiting real dispatch logic in M3.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S1",
+                  "title": "Add typed-command constants to core.rs",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.4/h3.3", "h2.10/h3.12", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md §Constants — exact values from notifier.h. See also plan/001_b92a9b2b603f/architecture/transport_evolution.md §New Constants.\n2. INPUT: No dependencies. These are standalone constants in src/core.rs.\n3. LOGIC: Add these constants to src/core.rs near the existing constants (DEFAULT_USAGE_PAGE, REPORT_LENGTH, etc.):\n   ```rust\n   /// Typed-command discriminator: first payload byte after 0x81 0x9F (PRD §10.1).\n   pub(crate) const CMD_DISCRIMINATOR: u8 = 0xF0;\n   /// Typed-response marker: response[0] == 0x51 means typed reply (PRD §10.2).\n   pub(crate) const RESPONSE_MARKER: u8 = 0x51;\n   /// Command IDs from firmware PRD §4.6 command table.\n   pub(crate) const CMD_QUERY_INFO: u8 = 0x01;\n   pub(crate) const CMD_QUERY_CALLBACK: u8 = 0x02;\n   pub(crate) const CMD_SET_OS: u8 = 0x03;\n   pub(crate) const CMD_APPLY_HOST_CONTEXT: u8 = 0x05;\n   /// Bounded timeout (ms) for reading the first reply after a burst.\n   /// Must be > 0 (unlike the drain's non-blocking timeout=0).\n   const REPLY_READ_TIMEOUT_MS: i32 = 1000;\n   ```\n   Use `pub(crate)` visibility — these are internal transport constants, not part of the public API. Add a unit test asserting the constant values match the firmware contract.\n4. OUTPUT: Constants in core.rs, consumable by build_command_data (P1.M2.T1), parse_reply (P1.M2.T2), and burst_to_one (P1.M3.T1).\n5. DOCS: none — internal constants with no user-facing/config/API surface change."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S2",
+                  "title": "Change run() to return CommandResponse and fix existing tests",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S3"],
+                  "prd_selectors": ["h2.3", "h2.8", "h2.11", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/findings_and_risks.md §R5 — the test `test_run_with_send_message_command` matches `Ok(())` which WILL break when the Ok type changes from `()` to `CommandResponse`. Also see system_context.md §qmkonnect consumer — qmkonnect uses `Ok(_) => ...` so it remains source-compatible.\n2. INPUT: Depends on P1.M1.T1.S3 (CommandResponse must exist). If P1.M1.T1.S2 (RunCommand variants) is done, the match in run() needs stub arms for the new variants.\n3. LOGIC: In src/lib.rs:\n   a) Change run() signature: `pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError>`\n   b) For RunCommand::SendMessage: after successful send_raw_report (still returns Result<(), QmkError> at this stage), return `Ok(CommandResponse::Legacy { matched: true })` as a PLACEHOLDER. Real reply parsing arrives in P1.M3.T3.\n   c) For RunCommand::ListDevices: after list_hid_devices(), return `Ok(CommandResponse::Timeout)` (semantic: no device reply was received — nothing was sent).\n   d) For typed variants (if they exist from S2): add `todo!()` stub arms — real dispatch is P1.M3.T3.\n   e) In src/main.rs: update to handle the new return type. Currently main.rs calls `run(params)` and checks `Err`. With the new return type, main.rs should print the CommandResponse on Ok (e.g., `println!(\"{}\", response)` — this requires CommandResponse to implement Display, OR main.rs can use debug print `println!(\"{:?}\", response)`). Use Debug print for now.\n   f) Fix existing tests in lib.rs: `test_run_with_send_message_command` matches `Ok(())` — change to `Ok(CommandResponse::Legacy { matched: true }) => {}` or use `Ok(_) => {}`. Similarly for `test_run_with_verbose_output`.\n4. OUTPUT: run() returns Result<CommandResponse, QmkError>. Crate compiles. All tests pass. Placeholder logic for typed commands.\n5. DOCS: [Mode A] Update the run() doc comment to describe the new return type and link to PRD §3 and §10. The lib.rs-level doc comment should mention CommandResponse. No separate docs file."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M2",
+          "title": "Pure Framing & Reply Parsing Functions",
+          "status": "Planned",
+          "description": "Implement the pure, hardware-free functions that build typed-command payloads from RunCommand variants and parse 32-byte device replies into CommandResponse. These are the heart of the typed-command transport and are fully unit-testable without any HID hardware.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M2.T1",
+              "title": "Implement build_command_data payload builder",
+              "status": "Planned",
+              "description": "Pure function in core.rs that converts any RunCommand variant into the logical payload bytes (what goes after the 0x81 0x9F magic header in the wire format). For strings: [string_bytes, 0x03 ETX]. For typed commands: [0xF0, cmd_id, args, 0x03 ETX].",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S1",
+                  "title": "Implement build_command_data for SendMessage and single-report typed commands",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S2", "P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.4/h3.2", "h2.4/h3.3", "h2.10/h3.12", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/transport_evolution.md §build_command_data — exact function signature and logic. See firmware_wire_contract.md §Command Table for each command's args layout. The magic header 0x81 0x9F is NOT part of this payload — burst_to_one adds those at buffer positions [1] and [2].\n2. INPUT: Depends on P1.M1.T1.S2 (RunCommand variants) and P1.M1.T2.S1 (CMD_* constants). The function takes `&RunCommand` and returns `Vec<u8>`.\n3. LOGIC: Add to src/core.rs:\n   ```rust\n   /// Build the logical payload for any RunCommand variant.\n   /// The payload goes AFTER the 0x81 0x9F magic header (burst_to_one adds those).\n   /// Strings: [string_bytes..., 0x03]. Typed: [0xF0, cmd_id, args..., 0x03].\n   pub(crate) fn build_command_data(command: &RunCommand) -> Vec<u8> {\n       match command {\n           RunCommand::SendMessage(msg) => {\n               let mut data = msg.as_bytes().to_vec();\n               data.push(ETX_TERMINATOR_BYTE);  // 0x03\n               data\n           }\n           RunCommand::QueryInfo => vec![CMD_DISCRIMINATOR, CMD_QUERY_INFO, 0x03],\n           RunCommand::QueryCallback(index) => vec![CMD_DISCRIMINATOR, CMD_QUERY_CALLBACK, *index, 0x03],\n           RunCommand::SetOs(os) => vec![CMD_DISCRIMINATOR, CMD_SET_OS, *os as u8, 0x03],\n           RunCommand::ApplyHostContext { .. } => /* see S2 */,\n           RunCommand::ListDevices => Vec::new(),  // not sent over wire\n       }\n   }\n   ```\n   NOTE: The ETX byte 0x03 is currently hardcoded in run() as `input_with_terminator.push(0x03)`. Define a named constant `const ETX_TERMINATOR_BYTE: u8 = 0x03;` in core.rs (or reuse if one exists). Verify the existing run() ETX-append logic matches.\n   Add exhaustive unit tests: verify exact byte output for SendMessage, QueryInfo, QueryCallback(0/255), SetOs(HostOs::Linux/Windows/Macos/Ios/Unsure), and ListDevices (empty vec).\n4. OUTPUT: build_command_data function in core.rs. Consumed by run() dispatch (P1.M3.T3.S1). The APPLY_HOST_CONTEXT arm is a todo!() stub filled by S2.\n5. DOCS: none — internal function with no user-facing surface change."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S2",
+                  "title": "Implement APPLY_HOST_CONTEXT payload in build_command_data",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.10/h3.12", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md §APPLY_HOST_CONTEXT request layout: [layer][flags][count][id0][id1]…. The layer byte: None => 0xFF (clear), Some(n) => n. The flags byte: bit 0 = clear_board. The count byte: number of callback IDs. Then count callback-id bytes. The firmware caps at HOST_CALLBACK_MAX=32 but the transport is uncapped (PRD §10.1).\n2. INPUT: Depends on P1.M2.T1.S1 (build_command_data function exists with a todo!() for ApplyHostContext).\n3. LOGIC: Replace the todo!() arm in build_command_data:\n   ```rust\n   RunCommand::ApplyHostContext { layer, callbacks, clear_board } => {\n       let mut data = vec![CMD_DISCRIMINATOR, CMD_APPLY_HOST_CONTEXT];\n       data.push(layer.unwrap_or(0xFF));  // None => 0xFF = clear host layer\n       let mut flags = 0u8;\n       if *clear_board { flags |= 0x01; }  // bit 0 = clear_board\n       data.push(flags);\n       data.push(callbacks.len().min(255) as u8);  // count, defensive clamp\n       data.extend_from_slice(callbacks);           // id0, id1, ...\n       data.push(0x03);                              // ETX\n       data\n   }\n   ```\n   Add unit tests:\n   - layer=None => byte is 0xFF\n   - layer=Some(224) => byte is 224\n   - clear_board=false => flags byte is 0x00\n   - clear_board=true => flags byte is 0x01\n   - callbacks=vec![1,5,10] => count=3, followed by [1,5,10]\n   - callbacks with >255 elements => count clamped to 255 (edge case)\n   - Full byte sequence for a representative ApplyHostContext matches [0xF0,0x05,layer,flags,count,ids...,0x03]\n4. OUTPUT: Complete build_command_data handling all RunCommand variants. Consumed by run() dispatch (P1.M3.T3.S1).\n5. DOCS: none — internal function."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T2",
+              "title": "Implement parse_reply reply parser",
+              "status": "Planned",
+              "description": "Pure function in core.rs that decodes a raw 32-byte device reply buffer into a CommandResponse. Handles typed replies (0x51 marker), legacy match-bool (0/1), and no-reply/timeout.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S1",
+                  "title": "Implement parse_reply for typed 0x51 replies",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S3", "P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.8", "h2.10/h3.13", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md §Reply Disambiguation and §Field Definitions for exact byte offsets. response[0]==0x51 => typed reply. response[1] is the cmd echo byte that determines the shape. Use defensive .get() indexing — replies may be truncated.\n2. INPUT: Depends on P1.M1.T1.S3 (CommandResponse enum) and P1.M1.T2.S1 (RESPONSE_MARKER, CMD_* constants).\n3. LOGIC: Add to src/core.rs:\n   ```rust\n   /// Parse a raw device reply into a CommandResponse.\n   /// response[0]==0x51 => typed reply (decode by response[1])\n   /// response[0] in {0,1} => Legacy { matched }\n   /// empty/unknown => Timeout\n   pub(crate) fn parse_reply(response: &[u8]) -> CommandResponse {\n       if response.is_empty() { return CommandResponse::Timeout; }\n       match response[0] {\n           RESPONSE_MARKER => parse_typed_reply(response),\n           0 => CommandResponse::Legacy { matched: false },\n           1 => CommandResponse::Legacy { matched: true },\n           _ => CommandResponse::Timeout,  // unknown marker => treat as non-capable\n       }\n   }\n\n   fn parse_typed_reply(response: &[u8]) -> CommandResponse {\n       let cmd_echo = response.get(1).copied().unwrap_or(0);\n       match cmd_echo {\n           CMD_QUERY_INFO => CommandResponse::Info {\n               proto_ver: response.get(2).copied().unwrap_or(0),\n               feature_flags: response.get(3).copied().unwrap_or(0),\n               callback_count: response.get(4).copied().unwrap_or(0),\n               board_rules_present: response.get(5).copied().unwrap_or(0) != 0,\n           },\n           CMD_QUERY_CALLBACK => {\n               let index = response.get(2).copied().unwrap_or(0);\n               let name = parse_callback_name(&response[3.min(response.len())..]);\n               CommandResponse::CallbackName { index, name }\n           }\n           CMD_SET_OS | CMD_APPLY_HOST_CONTEXT => {\n               CommandResponse::Ack { ok: response.get(2).copied().unwrap_or(0) != 0 }\n           }\n           _ => CommandResponse::Timeout,  // unknown cmd echo\n       }\n   }\n   ```\n   parse_callback_name reads ASCII bytes until NUL (0x00) or end of slice, returns None if empty/NUL-at-start. Use String::from_utf8 with .ok() for lossy handling.\n   Add exhaustive unit tests with synthetic byte arrays:\n   - Info reply [0x51,0x01,2,0x03,5,1] => Info{proto_ver:2, feature_flags:3, callback_count:5, board_rules_present:true}\n   - Info reply with board_rules_present=0 => board_rules_present=false\n   - CallbackName [0x51,0x02,3,b'V',b'i',b'm',0,0...] => CallbackName{index:3, name:Some(\"Vim\")}\n   - CallbackName with NUL at start [0x51,0x02,5,0x00,...] => name:None\n   - Ack [0x51,0x03,1] => Ack{ok:true}\n   - Ack [0x51,0x05,0] => Ack{ok:false}\n4. OUTPUT: parse_reply function in core.rs. Consumed by run() dispatch (P1.M3.T3.S1).\n5. DOCS: none — internal function."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S2",
+                  "title": "Add legacy/timeout/edge-case handling to parse_reply and finalize tests",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.8", "h2.10/h3.13", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/findings_and_risks.md §R2 — the caller treats non-0x51 replies and timeouts as legacy/non-capable devices. The parse_reply function from S1 already handles 0/1 => Legacy. This subtask adds tests for the full edge-case matrix.\n2. INPUT: Depends on P1.M2.T2.S1 (parse_reply exists with typed-reply decoding).\n3. LOGIC: Verify and add unit tests for ALL edge cases of parse_reply:\n   - Empty slice `&[]` => Timeout\n   - response[0]==0 => Legacy{matched:false}\n   - response[0]==1 => Legacy{matched:true}\n   - response[0]==0x51 but response too short (len < 3) => should not panic; defensive .get() returns default values\n   - response[0]==0x51, response[1]==0xFF (unknown cmd echo) => Timeout\n   - response[0]==0x42 (unknown marker) => Timeout\n   - response[0]==0x51, response[1]==0x02, name with non-UTF8 bytes => name should be None (from_utf8 fails => .ok() => None)\n   - Truncated Info reply (len=4, missing board_rules_present) => board_rules_present defaults to false\n   If any test reveals a bug in S1's implementation, fix it here. This subtask is the safety net.\n4. OUTPUT: Fully tested parse_reply covering all wire-protocol reply shapes. Consumed by run() dispatch (P1.M3.T3.S1).\n5. DOCS: none — internal function with comprehensive test coverage."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M3",
+          "title": "Transport Reply Capture Integration",
+          "status": "Planned",
+          "description": "Evolve the existing transport layer (burst_to_one, try_send_once, send_raw_report) to capture the first device reply instead of discarding all replies, and wire run() to use build_command_data + send_raw_report + parse_reply for full typed-command dispatch. This is the integration milestone that connects the pure functions (M2) to the HID I/O layer.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M3.T1",
+              "title": "Evolve burst_to_one to capture first reply",
+              "status": "Planned",
+              "description": "Change burst_to_one from returning bool to returning (bool, Option<Vec<u8>>), where the Option carries the first 32-byte IN-side reply captured with a bounded read_timeout. The existing non-blocking drain of surplus reports is preserved.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T1.S1",
+                  "title": "Change burst_to_one return type and add bounded reply capture",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.7/h3.11", "h2.8", "h2.4/h3.4", "h2.4/h3.5", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/transport_evolution.md §burst_to_one Reply Capture Logic — the exact before/after code. See also external_deps.md §read_timeout semantics — Ok(0) means timeout/no-data (not an error), Ok(n>0) means data read. REPLY_READ_TIMEOUT_MS (1000ms) was added in P1.M1.T2.S1.\n2. INPUT: Depends on P1.M1.T2.S1 (REPLY_READ_TIMEOUT_MS constant exists in core.rs). The current burst_to_one is at ~src/core.rs:330, returns bool, has a drain loop using read_timeout(0).\n3. LOGIC: In src/core.rs, change burst_to_one:\n   a) Change signature: `fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose: bool) -> (bool, Option<Vec<u8>>)`\n   b) Keep the existing write loop unchanged (fill [0x00, 0x81, 0x9F, payload...], write each report). On write error return `(false, None)`.\n   c) After all writes succeed, BEFORE the drain loop, add a bounded reply read:\n      ```rust\n      let mut reply: Option<Vec<u8>> = None;\n      let mut read_buf = [0u8; REPORT_LENGTH + 1];\n      match interface.read_timeout(&mut read_buf, REPLY_READ_TIMEOUT_MS) {\n          Ok(n) if n > 0 => { reply = Some(read_buf[..n].to_vec()); }\n          _ => {}  // Ok(0)=timeout, Err=read failure; reply stays None\n      }\n      ```\n   d) Keep the existing drain loop AFTER the reply read (drain surplus with read_timeout(0), bounded by IN_DRAIN_MAX).\n   e) Return `(true, reply)`.\n   f) Update the call site in try_send_once — this WILL cause a compile error because try_send_once calls `burst_to_one(...)` and expects bool. Add a temporary `.0` access or handle the tuple. The full try_send_once evolution is P1.M3.T2.S1.\n   g) Add verbose logging for the captured reply length.\n   h) Update the existing burst_to_one doc comment to document the reply capture.\n   Unit tests for burst_toone cannot run without hardware — verify via compilation and the fact that the existing drain tests still pass conceptually. Focus on ensuring the function signature change is clean.\n4. OUTPUT: burst_to_one returns (bool, Option<Vec<u8>>). The crate may not compile until try_send_once (next subtask) is updated. That is expected — the dependency chain is burst_to_one -> try_send_once -> send_raw_report -> run().\n5. DOCS: none — internal function change."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M3.T2",
+              "title": "Evolve send_raw_report to propagate reply data",
+              "status": "Planned",
+              "description": "Propagate the captured reply upward through try_send_once and send_raw_report so run() can access it. Changes return types at each level of the call stack.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T2.S1",
+                  "title": "Update try_send_once and send_raw_report to propagate first reply",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M3.T1.S1"],
+                  "prd_selectors": ["h2.7/h3.9", "h2.7/h3.10", "h2.7/h3.11", "h2.3", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/transport_evolution.md §Signature Changes items 3-5 — exact before/after signatures. The call stack is: send_raw_report -> try_send_once -> burst_to_one. Each level must propagate the first reply upward.\n2. INPUT: Depends on P1.M3.T1.S1 (burst_to_one now returns (bool, Option<Vec<u8>>)). The current try_send_once returns Result<SendOutcome, QmkError>. The current send_raw_report returns Result<(), QmkError>.\n3. LOGIC: In src/core.rs:\n   a) try_send_once: change return type to `Result<(SendOutcome, Option<Vec<u8>>), QmkError>`. In the device loop, collect the first successful device's reply:\n      ```rust\n      let mut first_reply: Option<Vec<u8>> = None;\n      for (_, interface) in devices.iter().enumerate() {\n          let (success, reply) = burst_to_one(interface, data, batch_count, verbose);\n          if success {\n              succeeded += 1;\n              if first_reply.is_none() { first_reply = reply; }\n          } else {\n              failed += 1;\n          }\n      }\n      // ... existing cache invalidation on failure ...\n      Ok((outcome, first_reply))\n      ```\n   b) send_raw_report: change return type to `Result<Option<Vec<u8>>, QmkError>`. In the retry loop, destructure the tuple:\n      ```rust\n      match try_send_once(&key, data, batch_count, verbose)? {\n          (SendOutcome::AllSucceeded, reply) => return Ok(reply),\n          (SendOutcome::Partial { succeeded, failed }, _) => {\n              return Err(QmkError::PartialSendError { succeeded, failed });\n          }\n          (SendOutcome::TotalFailure, _) if attempt < SEND_RETRIES => { continue; }\n          (SendOutcome::TotalFailure, _) => {\n              return Err(QmkError::SendReportError(hidapi::HidError::HidApiError {\n                  message: \"Failed to send to any devices\".to_string(),\n              }));\n          }\n      }\n      ```\n   c) This is a PUBLIC API change for send_raw_report (it's re-exported in lib.rs). The PRD §3 re-export list includes send_raw_report. Update the return type and ensure it compiles.\n   d) Update any existing tests that call send_raw_report directly (there are none in the current codebase, but verify).\n4. OUTPUT: send_raw_report returns Result<Option<Vec<u8>>, QmkError>. The crate should now compile (the full call stack is consistent). Consumed by run() dispatch (P1.M3.T3.S1).\n5. DOCS: [Mode A] Update the send_raw_report doc comment to document the new Option<Vec<u8>> return (Some = first device reply, None = no reply captured). This is a public API change."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M3.T3",
+              "title": "Wire run() full typed-command dispatch",
+              "status": "Planned",
+              "description": "Replace the placeholder/stub logic in run() with the real dispatch: build_command_data -> send_raw_report -> parse_reply -> CommandResponse. This ties together all the work from M1 and M2.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T3.S1",
+                  "title": "Implement run() dispatch using build_command_data, send_raw_report, and parse_reply",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M2.T1.S2", "P1.M2.T2.S2", "P1.M3.T2.S1"],
+                  "prd_selectors": ["h2.3", "h2.7/h3.9", "h2.8", "h2.10/h3.12", "h2.10/h3.13", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/transport_evolution.md §Data Flow Comparison (v0.3.0 target) — the exact run() dispatch logic. The current run() in lib.rs has placeholder CommandResponse returns (from P1.M1.T2.S2) and todo!() stubs for typed variants.\n2. INPUT: Depends on P1.M2.T1.S2 (build_command_data complete), P1.M2.T2.S2 (parse_reply complete), P1.M3.T2.S1 (send_raw_report returns Option<Vec<u8>>).\n3. LOGIC: Rewrite the run() match in src/lib.rs to use the full dispatch chain:\n   ```rust\n   pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError> {\n       match &params.command {\n           RunCommand::ListDevices => {\n               list_hid_devices()?;\n               Ok(CommandResponse::Timeout)\n           }\n           RunCommand::SendMessage(_) | RunCommand::QueryInfo | RunCommand::QueryCallback(_)\n           | RunCommand::SetOs(_) | RunCommand::ApplyHostContext { .. } => {\n               if params.verbose {\n                   // existing verbose logging for VID/PID/usage\n               }\n               let data = build_command_data(&params.command);\n               match send_raw_report(&data, params.vendor_id, params.product_id,\n                                     params.usage_page, params.usage, params.verbose)? {\n                   Some(reply) => Ok(parse_reply(&reply)),\n                   None => Ok(CommandResponse::Timeout),\n               }\n           }\n       }\n   }\n   ```\n   Key points:\n   - build_command_data and parse_reply are pub(crate) in core.rs; lib.rs already has `mod core;` so they're accessible. You may need to add them to the `use core::{...}` list in lib.rs, or call `core::build_command_data(...)`. Check how the existing code references core functions.\n   - The verbose logging block currently lives in the SendMessage arm. Move it to the shared arm (it applies to all send commands).\n   - Remove the old ETX-appending logic from run() (it's now in build_command_data).\n   - Update the existing tests: test_run_with_send_message_command now expects CommandResponse instead of (). The test calls run() with a fake VID/PID, so it will likely get DeviceNotFound (Err) — that's fine, the test already handles Err cases.\n   - Add a new test: test_run_query_info_dispatch constructs RunCommand::QueryInfo, calls run() (expects DeviceNotFound Err without hardware — validates the dispatch path doesn't panic).\n4. OUTPUT: run() fully dispatches all RunCommand variants through the transport layer and returns parsed CommandResponse. The v0.3.0 typed-command transport is functionally complete.\n5. DOCS: [Mode A] Update run() doc comment to document the full dispatch path, the CommandResponse return, and reference PRD §10. This is the primary public API change of v0.3.0."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M4",
+          "title": "CLI, Cleanup & Documentation",
+          "status": "Planned",
+          "description": "Add optional diagnostic CLI subcommands, clean up unused dependencies, bump version to 0.3.0, and sync all changeset-level documentation (README.md, cross-doc consistency).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M4.T1",
+              "title": "Add diagnostic CLI subcommands",
+              "status": "Planned",
+              "description": "Add optional CLI flags for the typed-command diagnostics: --query-info and --list-callbacks. These map to RunCommand::QueryInfo and a loop of RunCommand::QueryCallback, providing convenient command-line access to the library API.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T1.S1",
+                  "title": "Add --query-info and --list-callbacks flags to parse_cli_args",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M3.T3.S1"],
+                  "prd_selectors": ["h2.11", "h2.3", "h2.10/h3.12"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See PRD §11 — '(Diagnostic subcommands — e.g. query-info, list-callbacks — are optional conveniences over the library API and are not required for qmkonnect, which uses the library directly.)' The current parse_cli_args in src/lib.rs uses clap builder API. The simplest approach is additional flags rather than subcommands (keeps the flat CLI structure).\n2. INPUT: Depends on P1.M3.T3.S1 (run() dispatch works so the CLI can exercise typed commands).\n3. LOGIC: In src/lib.rs parse_cli_args():\n   a) Add a `--query-info` flag (ArgAction::SetTrue). When set, maps to `RunCommand::QueryInfo`.\n   b) Add a `--list-callbacks` flag (ArgAction::SetTrue). When set, the CLI runs QueryInfo first to get callback_count, then loops QueryCallback(0..count), printing each CallbackName. This is a CLI-level concern, not a single RunCommand — parse_cli_args returns RunCommand::QueryInfo, and main.rs handles the loop. OR: parse_cli_args returns a special command that main.rs interprets. Keep it simple: --list-callbacks returns RunCommand::QueryInfo and main.rs does the callback sweep if the flag was set.\n   c) Update the command selection logic: the priority is --list > --query-info > --list-callbacks > message positional. Each is mutually exclusive with the others (or message).\n   d) In main.rs, after run() returns CommandResponse::Info, if --list-callbacks was requested, loop QueryCallback and print results. This requires main.rs to call run() multiple times (once for QueryInfo, then once per callback index).\n   e) Note: The PRD says these are OPTIONAL conveniences. If implementation is complex, a minimal --query-info flag that just prints the Info response is sufficient for v0.3.0. --list-callbacks can be deferred.\n4. OUTPUT: parse_cli_args supports new flags. main.rs handles the diagnostic output. CLI users can run `qmk_notifier --query-info` to see device capability info.\n5. DOCS: [Mode A] Update the CLI usage table in README.md §Command Line Options to include the new flags. Update the --help output description in parse_cli_args."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M4.T2",
+              "title": "Dependency cleanup and version bump",
+              "status": "Planned",
+              "description": "Remove unused dependencies (toml, serde, dirs) from Cargo.toml and bump the crate version from 0.2.1 to 0.3.0.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T2.S1",
+                  "title": "Remove unused deps and bump version to 0.3.0",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M3.T3.S1"],
+                  "prd_selectors": ["h2.2", "h2.13"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_b92a9b2b603f/architecture/system_context.md §Dependency note — verified by grep that toml, serde, and dirs have ZERO references in src/. Also see external_deps.md §Cargo.toml dependency state. The PRD §2 says 'toml/serde are currently listed but unused after config-file support was removed — they may be dropped.' dirs is also dead code.\n2. INPUT: No code dependencies. This is a Cargo.toml-only change.\n3. LOGIC: In Cargo.toml:\n   a) Change `version = \"0.2.1\"` to `version = \"0.3.0\"`.\n   b) Remove these three lines from [dependencies]:\n      - `toml = \"0.8.10\"`\n      - `serde = { version = \"1.0\", features = [\"derive\"] }`\n      - `dirs = \"5.0.1\"`\n   c) Run `cargo build` and `cargo test` to verify nothing breaks. If any test or code references these crates (unexpected), restore the dep and investigate.\n   d) Run `cargo update` to refresh Cargo.lock (the lockfile will drop the removed deps and their transitive deps).\n   e) Verify `cargo build --release` succeeds.\n4. OUTPUT: Leaner Cargo.toml with only clap, hidapi. Version 0.3.0. Cargo.lock updated.\n5. DOCS: [Mode A] The Cargo.toml version bump is a config surface change. No separate docs file needed — the README version references are handled by P1.M4.T3.S1."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M4.T3",
+              "title": "Sync changeset-level documentation",
+              "status": "Planned",
+              "description": "Final cross-cutting documentation task. Updates README.md and any overview docs to reflect the complete v0.3.0 delta: new typed-command API, CommandResponse return type, CLI subcommands, and version. This task depends on ALL implementing subtasks and runs last.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T3.S1",
+                  "title": "Update README.md with v0.3.0 API surface and typed-command documentation",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M4.T1.S1", "P1.M4.T2.S1", "P1.M3.T3.S1", "P1.M2.T1.S2", "P1.M2.T2.S2"],
+                  "prd_selectors": ["h2.1", "h2.2", "h2.3", "h2.10", "h2.11", "h2.13", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The current README.md documents v0.2.1 behavior. It has a 'Programmatic Usage' section showing `match run(params) { Ok(()) => ... }` and a note about 'Round B (v0.3.0) changes run() to return Result<CommandResponse, QmkError>'. This note must be replaced with actual v0.3.0 documentation.\n2. INPUT: Depends on all implementing subtasks (the API surface is now final).\n3. LOGIC: Update README.md:\n   a) Overview section: update to describe typed-command transport (QueryInfo, QueryCallback, SetOs, ApplyHostContext) alongside the legacy string path.\n   b) Programmatic Usage section: replace the v0.2.1 code example with a v0.3.0 example showing:\n      ```rust\n      use qmk_notifier::{RunParameters, RunCommand, HostOs, run};\n      let params = RunParameters::new(\n          RunCommand::QueryInfo, None, None, 0xFF60, 0x61, false,\n      );\n      match run(params) {\n          Ok(qmk_notifier::CommandResponse::Info { proto_ver, feature_flags, .. }) => { ... }\n          Ok(qmk_notifier::CommandResponse::Timeout) => { /* legacy device */ }\n          Err(e) => { ... }\n      }\n      ```\n   c) Remove the 'Round B (v0.3.0)' forward-reference note — it's now the current version.\n   d) CLI section: add the new --query-info and --list-callbacks flags to the options table.\n   e) Default Reference Values section: clarify that VID/PID default to None (auto-discovery), not 0xFEED/0x0000. The DEFAULT_VENDOR_ID/DEFAULT_PRODUCT_ID constants are reference values, not matching defaults.\n   f) Technical Details section: mention typed-command framing [0x81][0x9F][0xF0][cmd][args][0x03] and reply parsing (0x51 typed vs 0/1 legacy).\n4. OUTPUT: README.md fully documents the v0.3.0 API surface.\n5. DOCS: [Mode B] This IS the changeset-level documentation task. README.md is the overview doc that spans the whole delta."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T3.S2",
+                  "title": "Final cross-document consistency verification",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M4.T3.S1"],
+                  "prd_selectors": ["h2.0", "h2.14"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: PRD §14 lists 8 Key Invariants that must be preserved. This subtask verifies each invariant holds in the final code.\n2. INPUT: Depends on P1.M4.T3.S1 (README is updated). All code is final.\n3. LOGIC: Perform a final consistency sweep:\n   a) Verify PRD §14 Invariant 1: Magic header is 0x81 0x9F; ETX is 0x03. Check core.rs burst_to_one still sets request_data[1]=0x81, request_data[2]=0x9F.\n   b) Verify Invariant 2: REPORT_LENGTH=32; hidapi buffer is 33. Check constant unchanged.\n   c) Verify Invariant 3: VID/PID None => match any. Check device_matches still uses is_none_or.\n   d) Verify Invariant 4: Cache keyed by MatchKey, invalidated on write failure, partial send never retried. Check send_raw_report retry loop unchanged.\n   e) Verify Invariant 5: Typed commands reuse same framing + cache. Verify build_command_data output goes through the same send_raw_report path.\n   f) Verify Invariant 6: Reply parsing disambiguates 0x51 from 0/1 from timeout. Check parse_reply.\n   g) Verify Invariant 7: Crate is transport-only. No window detection, no pattern matching in the codebase.\n   h) Verify Invariant 8: Where this SPEC and firmware PRD disagree, firmware wins. Check firmware_wire_contract.md for any discrepancies with the implementation.\n   i) Run `cargo test` one final time — all tests pass.\n   j) Run `cargo clippy` if available — no warnings.\n   Report any drift found. Fix if minor (typos in comments); flag if significant.\n4. OUTPUT: Signed-off verification that all 8 key invariants hold in the v0.3.0 codebase.\n5. DOCS: [Mode B] This is the final consistency gate of the changeset-level documentation task."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
