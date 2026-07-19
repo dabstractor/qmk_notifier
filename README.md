@@ -6,10 +6,10 @@ A high-performance Rust application that sends string commands to QMK keyboards 
 
 I built `qmk_notifier` to communicate with QMK-powered keyboards from your desktop. It efficiently handles serializing messages and sending them in batches to overcome the 32-byte HID report size limitation, enabling seamless communication with your keyboard for dynamic layer and command management.
 
-This tool is part of a broader ecosystem I've created:
-- **qmk_notifier** (this tool): Desktop application that sends commands to your keyboard
-- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: QMK module that receives commands and handles layer/feature toggling
-- **[hyprland-qmk-notifier](https://github.com/dabstractor/hyprland-qmk-notifier)**: Wayland application that detects window changes and sends application info to the keyboard
+This crate is the **transport layer** of a three-part ecosystem (see `SPEC.md` for the full contract):
+- **qmk_notifier** (this crate): Rust library + CLI that owns Raw-HID wire framing, the device cache, and burst-write (round B adds typed-command transport + reply parsing). Transport only — it does no matching.
+- **[qmkonnect](https://github.com/dabstractor/qmkonnect)**: Cross-platform desktop daemon that detects the foreground window, runs the host-side matcher (`rules.toml`), and sends via this crate.
+- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: QMK firmware module that receives, pattern-matches, and toggles layers/features. It owns the canonical wire protocol.
 
 ## Installation
 
@@ -46,31 +46,34 @@ brew install hidapi
 
 ## Usage
 
-All HID parameters are now required and must be provided explicitly:
+VID/PID are optional (omit them for auto-discovery by usage page/usage — the zero-config path). Only the message (or `--list`) is required:
 
 ```bash
-# Send a message to your keyboard (all parameters required)
-qmk_notifier --vendor-id 0xFEED --product-id 0x0000 --usage-page 0xFF60 --usage 0x61 "your_message_here"
+# Send a message — auto-discover any QMK keyboard (usage page 0xFF60 / usage 0x61)
+qmk_notifier "your_message_here"
+
+# Disambiguate among multiple QMK keyboards with explicit VID/PID
+qmk_notifier --vendor-id 0xFEED --product-id 0x0000 "your_message_here"
 
 # List all connected HID devices
-qmk_notifier --vendor-id 0xFEED --product-id 0x0000 --usage-page 0xFF60 --usage 0x61 --list
+qmk_notifier --list
 
 # Enable verbose output
-qmk_notifier --vendor-id 0xFEED --product-id 0x0000 --usage-page 0xFF60 --usage 0x61 --verbose "your_message_here"
+qmk_notifier -v "your_message_here"
 ```
 
 ## Command Line Options
 
-| Option | Short | Required | Description |
-|--------|-------|----------|-------------|
-| `message` | | No* | Message to send to keyboard (positional argument) |
-| `--vendor-id` | `-i` | Yes | USB vendor ID in decimal or hex format (e.g., `65261` or `0xFEED`) |
-| `--product-id` | `-p` | Yes | USB product ID in decimal or hex format (e.g., `0` or `0x0000`) |
-| `--usage-page` | `-u` | Yes | HID usage page in decimal or hex format (e.g., `65376` or `0xFF60`) |
-| `--usage` | `-a` | Yes | HID usage in decimal or hex format (e.g., `97` or `0x61`) |
-| `--verbose` | `-v` | No | Enable verbose output for debugging |
-| `--list` | `-l` | No | List all available HID devices |
-| `--help` | | No | Display help information |
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `message` | | — | Message to send to keyboard (positional; ETX appended automatically). |
+| `--vendor-id` | `-i` | auto (`None`) | USB vendor ID, decimal or `0xHEX` (e.g. `65261` or `0xFEED`). Omit ⇒ match any. |
+| `--product-id` | `-p` | auto (`None`) | USB product ID. Omit ⇒ match any. |
+| `--usage-page` | `-u` | `0xFF60` | HID usage page, decimal or `0xHEX`. |
+| `--usage` | `-a` | `0x61` | HID usage, decimal or `0xHEX`. |
+| `--verbose` | `-v` | off | Enable verbose transport logging. |
+| `--list` | `-l` | off | List all available HID devices. |
+| `--help` | | | Display help information. |
 
 *Either `message` or `--list` must be provided.
 
@@ -90,28 +93,25 @@ This package can also be used as a library in other Rust projects:
 ```rust
 use qmk_notifier::{RunParameters, RunCommand, run};
 
-// Send a message
+// Send a message — auto-discover (VID/PID = None ⇒ match any QMK keyboard)
 let params = RunParameters::new(
     RunCommand::SendMessage("Hello keyboard!".to_string()),
-    0xFEED,  // vendor_id
-    0x0000,  // product_id
-    0xFF60,  // usage_page
-    0x61,    // usage
-    false    // verbose
+    None,              // vendor_id  (Some(0xFEED) to disambiguate)
+    None,              // product_id (Some(0x0000) to disambiguate)
+    0xFF60,            // usage_page
+    0x61,              // usage
+    false,             // verbose
 );
 
 match run(params) {
-    Ok(()) => println!("Message sent successfully"),
+    Ok(()) => println!("Message sent successfully"),   // v0.2.x: run() returns ()
     Err(e) => eprintln!("Error: {}", e),
 }
-
-// List devices
-let list_params = RunParameters::new(
-    RunCommand::ListDevices,
-    0xFEED, 0x0000, 0xFF60, 0x61, true
-);
-run(list_params)?;
 ```
+
+> Round B (v0.3.0) changes `run()` to return `Result<CommandResponse, QmkError>`
+> and adds typed-command variants (`QueryInfo`, `QueryCallback`, `SetOs`,
+> `ApplyHostContext`). See `SPEC.md` §10.
 
 ## Technical Details
 
