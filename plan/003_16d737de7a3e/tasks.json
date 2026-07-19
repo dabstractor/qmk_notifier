@@ -108,7 +108,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Add typed_mode flag + 0xF0 discriminator routing fork in hid_notify",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T2.S1"
@@ -125,7 +125,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "Implement set_host_layer (host layer tracker, independent of board activated_layer)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"

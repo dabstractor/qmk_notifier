@@ -89,6 +89,12 @@ static uint16_t msg_index = 0;
 // (Fixes validation ISSUE-2 — spurious dispatch + cross-message state bleed.)
 static bool dropping = false;
 
+/* typed_mode — set on the first report of a message whose data[2] ==
+ * NOTIFY_CMD_DISCRIMINATOR (0xF0), read at ETX to route to
+ * handle_typed_command, and reset at every ETX/overflow boundary (RISK-1).
+ * Persists across hid_notify calls for multi-report messages. */
+static bool typed_mode = false;
+
 // Default empty map if user doesn't define them
 static command_map_t empty_command_map[1] = {0};
 static layer_map_t empty_layer_map[1] = {0};
@@ -531,10 +537,30 @@ void notifier_set_os(os_variant_t os) {
     apply_os_change(os);
 }
 
+/* STUB — real handle_typed_command lands in P1.M2.T2 (typed response builder +
+ * the four handlers). Present here so hid_notify's typed branch links. The real
+ * version owns the [0x51] typed response (§4.6) and routes cmd_id to
+ * QUERY_INFO/QUERY_CALLBACK/SET_OS/APPLY_HOST_CONTEXT. */
+static bool handle_typed_command(char *buf) {
+    (void)buf;
+    return false;
+}
+
 void hid_notify(uint8_t *data, uint8_t length) {
     // Check for our identifiers to ensure no conflicts with other libraries
     if (length < 2 || data[0] != 0x81 || data[1] != 0x9F) {
         return; // Discard the message if it doesn't match
+    }
+
+    /* §4.6 typed-command discriminator: data[2] == 0xF0 routes to the typed
+     * path (handle_typed_command), which bypasses process_full_message so it
+     * has NO board disable/deactivate side effects. Checked ONLY on the first
+     * report of a message (msg_index == 0): the discriminator is at data[2] in
+     * the first report, but continuation reports carry payload there (which may
+     * coincidentally be 0xF0). Legacy strings have a printable data[2]
+     * (0x20-0x7E), never 0xF0, so this routing is transparent to them. */
+    if (msg_index == 0 && length >= 3 && data[2] == NOTIFY_CMD_DISCRIMINATOR) {
+        typed_mode = true;
     }
 
     // Strip off those 2 identifying characters
@@ -543,6 +569,7 @@ void hid_notify(uint8_t *data, uint8_t length) {
 
     // Process each byte of the incoming packet.
     bool match = false;
+    bool typed_dispatched = false;   /* true iff a typed msg was serviced on ETX this call */
     for (uint8_t i = 0; i < length; i++) {
         char c = (char)data[i];
         // End of text (ASCII 3) indicates the end of the message.
@@ -552,17 +579,26 @@ void hid_notify(uint8_t *data, uint8_t length) {
             // do NOT let leftover bytes prefix the next message. Only dispatch
             // if we were accumulating a clean (non-overflowed) message.
             if (!dropping) {
-                // Sanitize the buffer in place, iterating by explicit length so an
-                // embedded NUL is stripped (PRD F2.3) rather than truncating the scan.
-                // sanitize_string NUL-terminates at write_ptr (<= str + msg_index).
-                sanitize_string(msg_buffer, (size_t)msg_index);
-                
-                match = process_full_message(msg_buffer);
+                if (typed_mode) {
+                    /* Typed path (§4.6): handle_typed_command owns the [0x51]
+                     * response and bypasses process_full_message (no board
+                     * disable/deactivate). NO sanitize — the typed payload is
+                     * binary (cmd_id + args), not an ASCII string. */
+                    match = handle_typed_command(msg_buffer);
+                    typed_dispatched = true;   /* suppress the legacy 0/1 ack below */
+                } else {
+                    // Sanitize the buffer in place, iterating by explicit length so an
+                    // embedded NUL is stripped (PRD F2.3) rather than truncating the scan.
+                    // sanitize_string NUL-terminates at write_ptr (<= str + msg_index).
+                    sanitize_string(msg_buffer, (size_t)msg_index);
+                    match = process_full_message(msg_buffer);
+                }
             }
             // Either way, the message boundary clears the overflow state so the
             // next message starts from a clean buffer.
             msg_index = 0; // Reset the buffer for the next message
             dropping = false;
+            typed_mode = false;   /* RISK-1: reset at every ETX boundary */
             break;
         } else if (dropping) {
             // Mid-oversized-message: silently ignore all payload bytes until the
@@ -577,10 +613,16 @@ void hid_notify(uint8_t *data, uint8_t length) {
                 // the rest of this (oversized) message until ETX (PRD F2.2).
                 msg_index = 0;
                 dropping = true;
+                typed_mode = false;   /* RISK-1: dropped msg clears typed classification */
             }
         }
     }
-    uint8_t response[RAW_REPORT_SIZE] = {0};
-    response[0] = match;
-    raw_hid_send(response, RAW_REPORT_SIZE);
+    /* Legacy acknowledgement only. Typed responses are sent INSIDE
+     * handle_typed_command ([0x51]...), so hid_notify must NOT also send the
+     * legacy 0/1 ack for typed commands (typed_dispatched guards it). */
+    if (!typed_dispatched) {
+        uint8_t response[RAW_REPORT_SIZE] = {0};
+        response[0] = match;
+        raw_hid_send(response, RAW_REPORT_SIZE);
+    }
 }
