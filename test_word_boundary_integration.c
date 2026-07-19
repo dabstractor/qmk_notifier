@@ -87,7 +87,7 @@ static void test_word_boundaries_with_anchors() {
         {"\\b$", "", true, false, "\\b$: word boundary + end anchor fails with empty string"},
     };
     
-    for (int i = 0; i < sizeof(anchor_tests) / sizeof(anchor_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(anchor_tests) / sizeof(anchor_tests[0]); i++) {
         run_test(anchor_tests[i]);
     }
 }
@@ -146,7 +146,7 @@ static void test_word_boundaries_with_wildcards() {
         {"*\\b", "", true, false, "*\\b: wildcard + word boundary fails with empty string"},
     };
     
-    for (int i = 0; i < sizeof(wildcard_tests) / sizeof(wildcard_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(wildcard_tests) / sizeof(wildcard_tests[0]); i++) {
         run_test(wildcard_tests[i]);
     }
 }
@@ -241,7 +241,7 @@ static void test_word_boundaries_with_metacharacters() {
         {"\\b\\S*\\b", "word", true, true, "\\b\\S*\\b: word boundaries with non-whitespace and wildcard (matches via wildcard)"},
     };
     
-    for (int i = 0; i < sizeof(metachar_tests) / sizeof(metachar_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(metachar_tests) / sizeof(metachar_tests[0]); i++) {
         run_test(metachar_tests[i]);
     }
 }
@@ -327,7 +327,7 @@ static void test_word_boundary_edge_cases() {
         {"*a\\B", "cba", true, false, "\\B: non-word boundary at end fails"},
     };
     
-    for (int i = 0; i < sizeof(edge_tests) / sizeof(edge_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(edge_tests) / sizeof(edge_tests[0]); i++) {
         run_test(edge_tests[i]);
     }
 }
@@ -356,7 +356,7 @@ static void test_word_boundary_case_sensitivity() {
         {"\\w\\bTest", "atest", true, false, "Case sensitive: word char + word boundary"},
     };
     
-    for (int i = 0; i < sizeof(case_tests) / sizeof(case_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(case_tests) / sizeof(case_tests[0]); i++) {
         run_test(case_tests[i]);
     }
 }

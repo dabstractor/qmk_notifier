@@ -92,7 +92,7 @@ static void test_word_boundary_basic() {
         {"\\bTEST\\b", "test", true, false, "\\b: case sensitive uppercase pattern"},
     };
     
-    for (int i = 0; i < sizeof(word_boundary_tests) / sizeof(word_boundary_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(word_boundary_tests) / sizeof(word_boundary_tests[0]); i++) {
         run_test(word_boundary_tests[i]);
     }
 }
@@ -124,7 +124,7 @@ static void test_word_boundary_with_anchors() {
         {"^\\b\\w+\\b$", "word-test", true, false, "^\\b\\w+\\b$: fails with hyphenated word"},
     };
     
-    for (int i = 0; i < sizeof(anchor_tests) / sizeof(anchor_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(anchor_tests) / sizeof(anchor_tests[0]); i++) {
         run_test(anchor_tests[i]);
     }
 }
@@ -153,7 +153,7 @@ static void test_word_boundary_with_wildcards() {
         {"wor*\\B", "wor", true, false, "*\\B: wildcard with non-word boundary fails at end"},
     };
     
-    for (int i = 0; i < sizeof(wildcard_tests) / sizeof(wildcard_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(wildcard_tests) / sizeof(wildcard_tests[0]); i++) {
         run_test(wildcard_tests[i]);
     }
 }
@@ -182,7 +182,7 @@ static void test_multiple_word_boundaries() {
         {"\\b\\s\\b", " ", true, false, "\\b\\s\\b: fails - space is not word char"},
     };
     
-    for (int i = 0; i < sizeof(multiple_tests) / sizeof(multiple_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(multiple_tests) / sizeof(multiple_tests[0]); i++) {
         run_test(multiple_tests[i]);
     }
 }

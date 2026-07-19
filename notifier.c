@@ -955,9 +955,40 @@ void hid_notify(uint8_t *data, uint8_t length) {
                         }
                     } else if (msg_index == 5 &&
                                (uint8_t)msg_buffer[1] == NOTIFY_CMD_APPLY_HOST_CONTEXT) {
+                        /* AHC ids-tail extension. `ahc_count` is the host-declared
+                         * ids byte count (data[4]); it may be GARBAGE (a host
+                         * glitch / KVM-drop sends 0xFF). We must extend
+                         * typed_literal_remaining by the ids still expected, but
+                         * BOUNDED so a garbage count cannot pin typed_mode on
+                         * for ~250 bytes (Issue 1 residual: that would silently
+                         * consume 1-9 subsequent legacy reports — including
+                         * their ETX terminators — as literal id bytes, so
+                         * process_full_message never runs and board layer/cmd
+                         * dispatch fails for that many messages; §1.3/§12/§2
+                         * F9.4 robustness envelope).
+                         *
+                         * Bound = bytes that can still arrive in the CURRENT
+                         * report PLUS a single bounded look-ahead of one extra
+                         * 32-byte report (RAW_REPORT_SIZE). This preserves a
+                         * legitimate multi-report AHC whose ids legitimately
+                         * span two reports (e.g. count=28 -> 25 ids in report1,
+                         * 3 in report2: 28 <= 25 + 30) while guaranteeing that
+                         * a garbage 0xFF count drains within at most ~2 reports
+                         * regardless of its value — so recovery becomes
+                         * independent of the (possibly garbage) count byte.
+                         *
+                         * `room` is the hard buffer bound (defense in depth;
+                         * the AHC handler re-clamps against the reassembled
+                         * length too). The look-ahead cap is the operative fix.
+                         * `i` is the current loop index over data[0..length);
+                         * the count byte just landed at data[i], so
+                         * length-1-i bytes remain in THIS report. */
                         uint8_t ahc_count = (uint8_t)msg_buffer[4];
                         uint16_t room = (uint16_t)((MSG_BUFFER_SIZE - 1) - msg_index);
-                        typed_literal_remaining += (ahc_count > room) ? room : ahc_count;
+                        uint16_t remain_in_report = (length - 1 > i) ? (uint16_t)(length - 1 - i) : 0;
+                        uint16_t look_ahead_cap = remain_in_report + RAW_REPORT_SIZE;
+                        uint16_t cap = (look_ahead_cap < room) ? look_ahead_cap : room;
+                        typed_literal_remaining += (ahc_count > cap) ? cap : ahc_count;
                     }
                     /* WATCHDOG latch (Issue 1): all declared literal bytes now
                      * consumed (post-extension) — await ETX on the NEXT byte.

@@ -53,7 +53,7 @@ static void test_start_anchor() {
         {"^abc", "ABC", true, false, "Start anchor: case sensitive no match"},
     };
     
-    for (int i = 0; i < sizeof(start_anchor_tests) / sizeof(start_anchor_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(start_anchor_tests) / sizeof(start_anchor_tests[0]); i++) {
         run_test(start_anchor_tests[i]);
     }
 }
@@ -76,7 +76,7 @@ static void test_end_anchor() {
         {"abc$", "ABC", true, false, "End anchor: case sensitive no match"},
     };
     
-    for (int i = 0; i < sizeof(end_anchor_tests) / sizeof(end_anchor_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(end_anchor_tests) / sizeof(end_anchor_tests[0]); i++) {
         run_test(end_anchor_tests[i]);
     }
 }
@@ -99,7 +99,7 @@ static void test_full_anchor() {
         {"^abc$", "ABC", true, false, "Full anchor: case sensitive no match"},
     };
     
-    for (int i = 0; i < sizeof(full_anchor_tests) / sizeof(full_anchor_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(full_anchor_tests) / sizeof(full_anchor_tests[0]); i++) {
         run_test(full_anchor_tests[i]);
     }
 }
@@ -123,7 +123,7 @@ static void test_anchors_with_wildcards() {
         {"^a*b*c$", "aabbcc", true, true, "Full anchor with multiple wildcards expanded"},
     };
     
-    for (int i = 0; i < sizeof(anchor_wildcard_tests) / sizeof(anchor_wildcard_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(anchor_wildcard_tests) / sizeof(anchor_wildcard_tests[0]); i++) {
         run_test(anchor_wildcard_tests[i]);
     }
 }
@@ -188,7 +188,7 @@ static void test_basic_metacharacter_escapes() {
         {"\\z", "\\z", true, true, "Invalid escape: \\z should match literally"},
     };
     
-    for (int i = 0; i < sizeof(metachar_escape_tests) / sizeof(metachar_escape_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(metachar_escape_tests) / sizeof(metachar_escape_tests[0]); i++) {
         run_test(metachar_escape_tests[i]);
     }
 }
@@ -285,7 +285,7 @@ static void test_basic_metacharacter_matching() {
         {"\\S", "@", true, true, "\\S: matches special character @ (non-whitespace)"},
     };
     
-    for (int i = 0; i < sizeof(metachar_matching_tests) / sizeof(metachar_matching_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(metachar_matching_tests) / sizeof(metachar_matching_tests[0]); i++) {
         run_test(metachar_matching_tests[i]);
     }
 }
@@ -339,7 +339,7 @@ static void test_escape_sequences() {
         {"nor\\*mal", "nor*mal", true, true, "Escaped * in normal pattern"},
     };
     
-    for (int i = 0; i < sizeof(escape_tests) / sizeof(escape_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(escape_tests) / sizeof(escape_tests[0]); i++) {
         run_test(escape_tests[i]);
     }
 }
@@ -369,7 +369,7 @@ static void test_backward_compatibility() {
         {"a*", "a", true, true, "Wildcard with minimum match"},
     };
     
-    for (int i = 0; i < sizeof(compatibility_tests) / sizeof(compatibility_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(compatibility_tests) / sizeof(compatibility_tests[0]); i++) {
         run_test(compatibility_tests[i]);
     }
 }
@@ -400,7 +400,7 @@ static void test_case_sensitivity() {
         {"Test\\*", "test*", true, false, "Case sensitive: escaped asterisk"},
     };
     
-    for (int i = 0; i < sizeof(case_tests) / sizeof(case_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(case_tests) / sizeof(case_tests[0]); i++) {
         run_test(case_tests[i]);
     }
 }
@@ -450,7 +450,7 @@ static void test_pattern_parsing() {
         {"\\^Test", "^test", true, false, "Parse escaped with case sensitive"},
     };
     
-    for (int i = 0; i < sizeof(parsing_tests) / sizeof(parsing_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(parsing_tests) / sizeof(parsing_tests[0]); i++) {
         run_test(parsing_tests[i]);
     }
 }
@@ -482,7 +482,7 @@ static void test_edge_cases() {
         {"^**$", "test", true, true, "Multiple consecutive wildcards with anchors"},
     };
     
-    for (int i = 0; i < sizeof(edge_tests) / sizeof(edge_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(edge_tests) / sizeof(edge_tests[0]); i++) {
         run_test(edge_tests[i]);
     }
 }
@@ -568,7 +568,7 @@ static void test_metacharacters_with_anchors() {
         {"\\w+@\\w+",   "user@host", true, true,  "REG: unanchored \\w+@\\w+ matches (substring)"},
     };
     
-    for (int i = 0; i < sizeof(metachar_anchor_tests) / sizeof(metachar_anchor_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(metachar_anchor_tests) / sizeof(metachar_anchor_tests[0]); i++) {
         run_test(metachar_anchor_tests[i]);
     }
 }
@@ -647,7 +647,7 @@ static void test_metacharacters_with_wildcards() {
         {"^\\w*\\d*$", "123", true, true, "Full anchor + multiple metachar wildcards: digits are word chars"},
     };
     
-    for (int i = 0; i < sizeof(metachar_wildcard_tests) / sizeof(metachar_wildcard_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(metachar_wildcard_tests) / sizeof(metachar_wildcard_tests[0]); i++) {
         run_test(metachar_wildcard_tests[i]);
     }
 }
@@ -706,7 +706,7 @@ static void test_metacharacter_case_sensitivity() {
         {"Test*\\w", "testanya", false, true, "Wildcard + metachar: case insensitive match lowercase"},
     };
     
-    for (int i = 0; i < sizeof(case_sensitivity_tests) / sizeof(case_sensitivity_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(case_sensitivity_tests) / sizeof(case_sensitivity_tests[0]); i++) {
         run_test(case_sensitivity_tests[i]);
     }
 }
@@ -758,7 +758,7 @@ static void test_metacharacter_backward_compatibility() {
         {"^simple$", "simple", true, true, "Backward compatibility: performance - simple anchored"},
     };
     
-    for (int i = 0; i < sizeof(backward_compatibility_tests) / sizeof(backward_compatibility_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(backward_compatibility_tests) / sizeof(backward_compatibility_tests[0]); i++) {
         run_test(backward_compatibility_tests[i]);
     }
 }
@@ -794,7 +794,7 @@ static void test_word_boundary_escape_processing() {
         {"\\*\\b", "*\\b", true, false, "Mixed escapes: \\* should be literal, \\b should be processed"},
     };
     
-    for (int i = 0; i < sizeof(word_boundary_escape_tests) / sizeof(word_boundary_escape_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(word_boundary_escape_tests) / sizeof(word_boundary_escape_tests[0]); i++) {
         run_test(word_boundary_escape_tests[i]);
     }
 }

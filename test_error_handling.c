@@ -117,7 +117,7 @@ static void test_invalid_escape_sequences() {
         {"\\X", "\\x", true, false, "Invalid escape case sensitive: no match"},
     };
     
-    for (int i = 0; i < sizeof(invalid_escape_tests) / sizeof(invalid_escape_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(invalid_escape_tests) / sizeof(invalid_escape_tests[0]); i++) {
         run_test(invalid_escape_tests[i]);
     }
 }
@@ -164,7 +164,7 @@ static void test_malformed_patterns() {
         {"\\\\*test", "\\test", true, true, "Escaped backslash with wildcard: minimum match"},
     };
     
-    for (int i = 0; i < sizeof(malformed_tests) / sizeof(malformed_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(malformed_tests) / sizeof(malformed_tests[0]); i++) {
         run_test(malformed_tests[i]);
     }
 }
@@ -328,7 +328,7 @@ static void test_special_character_edge_cases() {
         {".", "\t", true, true, "Dot should match tab"},
     };
     
-    for (int i = 0; i < sizeof(special_char_tests) / sizeof(special_char_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(special_char_tests) / sizeof(special_char_tests[0]); i++) {
         run_test(special_char_tests[i]);
     }
 }
@@ -357,7 +357,7 @@ static void test_memory_allocation_edge_cases() {
         {"\\a", "\\a", true, true, "Invalid escape (fallback handling)"},
     };
     
-    for (int i = 0; i < sizeof(memory_tests) / sizeof(memory_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(memory_tests) / sizeof(memory_tests[0]); i++) {
         run_test(memory_tests[i]);
     }
     
@@ -433,7 +433,7 @@ static void test_word_boundary_edge_cases() {
         {"\\b\\w\\b\\s\\b\\w\\b", "a b", true, true, "Single chars with word boundaries"},
     };
     
-    for (int i = 0; i < sizeof(boundary_tests) / sizeof(boundary_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(boundary_tests) / sizeof(boundary_tests[0]); i++) {
         run_test(boundary_tests[i]);
     }
 }
@@ -488,7 +488,7 @@ static void test_dot_metacharacter_edge_cases() {
         {"test\\.txt", "testxtxt", true, false, "Escaped dot: literal dot required"},
     };
     
-    for (int i = 0; i < sizeof(dot_tests) / sizeof(dot_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(dot_tests) / sizeof(dot_tests[0]); i++) {
         run_test(dot_tests[i]);
     }
 }
@@ -528,7 +528,7 @@ static void test_complex_error_scenarios() {
         {"\\B\\b", "test", true, false, "Non-word boundary followed by word boundary"},
     };
     
-    for (int i = 0; i < sizeof(complex_tests) / sizeof(complex_tests[0]); i++) {
+    for (size_t i = 0; i < sizeof(complex_tests) / sizeof(complex_tests[0]); i++) {
         run_test(complex_tests[i]);
     }
 }

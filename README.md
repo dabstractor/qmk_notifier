@@ -514,7 +514,7 @@ into **three** host test binaries, and runs all three:
   default fallback when an OS map is absent/matches nothing/`OS_UNSURE`,
   independent command vs layer tracks, and `notifier_set_os` idempotence +
   clear-on-change.
-- **`test_notifier_host`** (79 cases) — the typed-command / host-rules
+- **`test_notifier_host`** (94 cases) — the typed-command / host-rules
   contract (§4.6 / §4.7 / §14): `QUERY_INFO` capability handshake +
   `has_been_queried` timing, `QUERY_CALLBACK` name discovery (valid +
   out-of-range), `SET_OS` (response layout, OS-map selection, F9
@@ -538,14 +538,16 @@ The pattern matching library implements a full regex construct set:
 - Pattern-match corpus (`./run_all_tests.sh`, 10 suites): **2029/2029** tests passing.
 - Notifier stub gate (`./run_notifier_stub_tests.sh`): `test_notifier_dispatch`
   **14/14** + `test_notifier_os` **31/31** cases passing.
-- `test_notifier_host` (79 cases): all categories pass — including the four `SET_OS`
+- `test_notifier_host` (94 cases): all categories pass — including the four `SET_OS`
   blocks. The `SET_OS` `cmd_id` (`0x03`) / `ETX`-terminator collision during typed
   reassembly is resolved by the length-aware typed-reassembly path in `notifier.c`
   (`typed_literal_remaining`). Coverage spans `QUERY_INFO` / `QUERY_CALLBACK` /
   `SET_OS` / `APPLY_HOST_CONTEXT` STACK vs REPLACE (`clear_board`) / callback-diff
   ordering (disable-before-enable) / host-layer clear (`0xFF`) / legacy-typed
   coexistence / non-magic discard / multi-report typed reassembly / and the
-  adversarial typed-command framing gate (Issue 1 watchdog regression).
+  adversarial typed-command framing gate (Issue 1 watchdog + residual-coverage:
+  large/garbled `count` (0x80/0xFF), KVM-drop lost-2nd-report (§2 F9.4), and
+  end-of-stream abandonment regression).
 **Performance Impact**: Negligible (~0.1 microseconds per `pattern_match` call)
 
 All original functionality works identically (no breaking changes), and

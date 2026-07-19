@@ -509,6 +509,143 @@ int main(void) {
         CK(stub_get_active_layer() == 224,           "(adv-D) post-flush AHC host layer 224 active [§14]");
     }
 
+    /* ================================================================ */
+    /* ===== Issue 1 RESIDUAL — large/garbled count & KVM-drop =========== */
+    /* ================================================================ */
+    /* The watchdog (typed_awaiting_terminator) arms only when
+     * typed_literal_remaining drains to 0. A garbage/large AHC count byte
+     * (host glitch sends 0xFF, or a well-formed multi-report AHC whose 2nd
+     * report is LOST on a KVM/USB switch — §2 F9.4) used to extend
+     * typed_literal_remaining by up to ~250 bytes (bounded only by
+     * MSG_BUFFER_SIZE), so typed_mode stayed pinned and 1-9 subsequent
+     * legacy reports had their bytes (incl. ETX) consumed as literal ids —
+     * process_full_message never ran and board dispatch silently failed.
+     *
+     * FIX: the AHC ids-tail extension is now bounded by (remaining bytes in
+     * the current report) + (one extra 32-byte report of look-ahead), NOT by
+     * MSG_BUFFER_SIZE. Recovery is therefore INDEPENDENT of the (possibly
+     * garbage) count byte: a bounded look-ahead means the watchdog drains and
+     * arms within at most ~2 reports regardless of count. A legitimate
+     * multi-report AHC whose ids span two reports (count <= remaining + 32)
+     * still reassembles correctly (see the multi-rep case above, count=28).
+     *
+     * These cases assert that legacy routing recovers within a SMALL, BOUNDED
+     * number of messages (<= 2) for count in {0x80, 0xFF} and for a lost 2nd
+     * report — closing the validation coverage gap (the original adv-A..D
+     * block used only count=5). */
+
+    /* ===== (adv-E) GARBAGE AHC count=0xFF — legacy recovers within 2 msgs =====
+     * The exact bytes from the validation report Phase 6 probe C. Pre-fix this
+     * misrouted 8 legacy messages; post-fix the bounded look-ahead caps it. */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        uint8_t r[32]; memset(r, 0, sizeof(r));
+        r[0]=0x81; r[1]=0x9F; r[2]=NOTIFY_CMD_DISCRIMINATOR; r[3]=NOTIFY_CMD_APPLY_HOST_CONTEXT;
+        r[4]=230; r[5]=0x00;
+        r[6]=0xFF; r[7]=0x41; r[8]=0x42;   /* count=255, only 2 ids, NO ETX */
+        hid_notify(r, 32);
+        const uint8_t *ra = stub_get_last_response();
+        CK(ra[0] != NOTIFY_RESPONSE_MARKER, "(adv-E) garbage AHC count=0xFF NOT typed-dispatched [Issue 1/§4.6]");
+
+        /* Send legacy 'neovide' reports until routing recovers (bounded <= 2). */
+        int recovered = 0;
+        for (int k = 0; k < 2 /* bounded look-ahead */ + 4 /* safety margin */; k++) {
+            uint8_t s[32]; memset(s, 0, sizeof(s));
+            s[0]=0x81; s[1]=0x9F;
+            s[2]='n'; s[3]='e'; s[4]='o'; s[5]='v'; s[6]='i'; s[7]='d'; s[8]='e';
+            s[9]=ETX_TERMINATOR[0];
+            hid_notify(s, 32);
+            const uint8_t *rs = stub_get_last_response();
+            if (rs[0] == 1 && rs[0] != NOTIFY_RESPONSE_MARKER) { recovered = 1; break; }
+        }
+        CK(recovered == 1, "(adv-E) legacy recovers within bounded look-ahead after count=0xFF [Issue 1/§1.3/§12]");
+        CK(board_cmd_en == 1, "(adv-E) legacy dispatch fired board on_enable after count=0xFF [Issue 1/§12]");
+        CK(stub_get_active_layer() == 5, "(adv-E) legacy dispatch activated board layer 5 after count=0xFF [Issue 1/§12]");
+    }
+
+    /* ===== (adv-F) GARBAGE AHC count=0x80 — legacy recovers within 2 msgs ===== */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        uint8_t r[32]; memset(r, 0, sizeof(r));
+        r[0]=0x81; r[1]=0x9F; r[2]=NOTIFY_CMD_DISCRIMINATOR; r[3]=NOTIFY_CMD_APPLY_HOST_CONTEXT;
+        r[4]=231; r[5]=0x00;
+        r[6]=0x80; r[7]=0x41; r[8]=0x42;   /* count=128, only 2 ids, NO ETX */
+        hid_notify(r, 32);
+        const uint8_t *ra = stub_get_last_response();
+        CK(ra[0] != NOTIFY_RESPONSE_MARKER, "(adv-F) garbage AHC count=0x80 NOT typed-dispatched [Issue 1/§4.6]");
+
+        int recovered = 0;
+        for (int k = 0; k < 2 + 4; k++) {
+            uint8_t s[32]; memset(s, 0, sizeof(s));
+            s[0]=0x81; s[1]=0x9F;
+            s[2]='n'; s[3]='e'; s[4]='o'; s[5]='v'; s[6]='i'; s[7]='d'; s[8]='e';
+            s[9]=ETX_TERMINATOR[0];
+            hid_notify(s, 32);
+            const uint8_t *rs = stub_get_last_response();
+            if (rs[0] == 1 && rs[0] != NOTIFY_RESPONSE_MARKER) { recovered = 1; break; }
+        }
+        CK(recovered == 1, "(adv-F) legacy recovers within bounded look-ahead after count=0x80 [Issue 1/§1.3]");
+        CK(stub_get_active_layer() == 5, "(adv-F) legacy dispatch activated board layer 5 after count=0x80 [Issue 1/§12]");
+    }
+
+    /* ===== (adv-G) KVM-DROP — well-formed multi-report AHC, 2nd report LOST =====
+     * §2 F9.4: a USB cable / KVM switch drops the 2nd report of a multi-report
+     * AHC mid-transfer. Report1 carries count=28 and 25 ids (fully packed); the
+     * 3-id + ETX continuation never arrives. Legacy routing must recover within
+     * a bounded window (pre-fix: 1 misroute; the realistic §2 F9.4 scenario). */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        uint8_t r1[32]; memset(r1, 0, sizeof(r1));
+        r1[0]=0x81; r1[1]=0x9F; r1[2]=NOTIFY_CMD_DISCRIMINATOR; r1[3]=NOTIFY_CMD_APPLY_HOST_CONTEXT;
+        r1[4]=232; r1[5]=0x00; r1[6]=28;   /* count=28 -> expects 28 ids; report2 LOST */
+        hid_notify(r1, 32);                /* report2 never sent (KVM drop) */
+        const uint8_t *ra = stub_get_last_response();
+        CK(ra[0] != NOTIFY_RESPONSE_MARKER, "(adv-G) KVM-drop AHC report1 NOT typed-dispatched (rep2 lost) [Issue 1/§2 F9.4]");
+
+        int recovered = 0;
+        for (int k = 0; k < 2 + 4; k++) {
+            uint8_t s[32]; memset(s, 0, sizeof(s));
+            s[0]=0x81; s[1]=0x9F;
+            s[2]='n'; s[3]='e'; s[4]='o'; s[5]='v'; s[6]='i'; s[7]='d'; s[8]='e';
+            s[9]=ETX_TERMINATOR[0];
+            hid_notify(s, 32);
+            const uint8_t *rs = stub_get_last_response();
+            if (rs[0] == 1 && rs[0] != NOTIFY_RESPONSE_MARKER) { recovered = 1; break; }
+        }
+        CK(recovered == 1, "(adv-G) legacy recovers within bounded window after KVM-drop [Issue 1/§2 F9.4/§1.3]");
+        CK(stub_get_active_layer() == 5, "(adv-G) legacy dispatch activated board layer 5 after KVM-drop [Issue 1/§12]");
+    }
+
+    /* ===== (adv-H) END-OF-STREAM abandonment — unfinished typed msg dropped =====
+     * Coverage gap: assert that an unfinished typed message (header consumed,
+     * NO ETX) is dropped at the report boundary and the NEXT well-formed LEGACY
+     * focus-change dispatches normally — regardless of count. Uses count=0 to
+     * isolate the pure end-of-stream abandonment path (independent of the
+     * ids-tail look-ahead); the count>0 cases (adv-E/F/G) cover the ids tail.
+     * This mirrors adv-B (truncated) but with count=0, asserting the abandoned
+     * frame never pins typed_mode across the report boundary. */
+    {
+        board_cmd_en = board_cmd_dis = 0;
+        uint8_t r[32]; memset(r, 0, sizeof(r));
+        r[0]=0x81; r[1]=0x9F; r[2]=NOTIFY_CMD_DISCRIMINATOR; r[3]=NOTIFY_CMD_APPLY_HOST_CONTEXT;
+        r[4]=233; r[5]=0x00; r[6]=0;   /* count=0, NO ETX — abandoned */
+        hid_notify(r, 32);
+        const uint8_t *ra = stub_get_last_response();
+        CK(ra[0] != NOTIFY_RESPONSE_MARKER, "(adv-H) abandoned AHC count=0 NOT typed-dispatched [Issue 1/§4.6]");
+        /* the very next legacy 'neovide' dispatches normally — abandoned frame
+         * was dropped at the report boundary, typed_mode not pinned */
+        uint8_t s[32]; memset(s, 0, sizeof(s));
+        s[0]=0x81; s[1]=0x9F;
+        s[2]='n'; s[3]='e'; s[4]='o'; s[5]='v'; s[6]='i'; s[7]='d'; s[8]='e';
+        s[9]=ETX_TERMINATOR[0];
+        hid_notify(s, 32);
+        const uint8_t *rs = stub_get_last_response();
+        CK(rs[0] == 1,                      "(adv-H) legacy 'neovide' recovers after abandoned count=0 AHC [Issue 1/§1.3]");
+        CK(rs[0] != NOTIFY_RESPONSE_MARKER, "(adv-H) legacy NOT misrouted to typed path after abandon [Issue 1]");
+        CK(board_cmd_en == 1,               "(adv-H) legacy dispatch fired board on_enable after abandon [Issue 1/§12]");
+        CK(stub_get_active_layer() == 5,    "(adv-H) legacy dispatch activated board layer 5 after abandon [Issue 1/§12]");
+    }
+
     printf("\nTotal tests run: %d / passed: %d / failed: %d\n", g_pass + g_fail, g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
