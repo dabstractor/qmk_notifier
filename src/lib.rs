@@ -212,7 +212,6 @@ fn build_cli_command() -> Command {
         )
         .arg(
             Arg::new("create-config")
-                .short('c')
                 .long("create-config")
                 .help("Create example configuration file (REMOVED)")
                 .action(ArgAction::SetTrue),
