@@ -2,6 +2,34 @@ use crate::error::QmkError;
 use hidapi::{HidApi, HidDevice};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
+/// Minimal HID I/O surface used by [`burst_to_one`]: the two methods it actually
+/// calls on an open HID handle. Abstracting these behind a trait lets `burst_to_one`
+/// be genericized over `impl RawHid` (next subtask) so its reply-capture logic can
+/// be unit-tested with a `FakeHid` double instead of requiring a physical keyboard.
+///
+/// `pub(crate)`: an internal testability seam — intentionally NOT exported from the
+/// crate. The blanket impl below delegates to `hidapi::HidDevice` unchanged, so
+/// runtime behavior is identical to calling hidapi directly.
+pub(crate) trait RawHid {
+    /// Write a raw HID OUT report. Mirrors `hidapi::HidDevice::write`.
+    fn write(&self, data: &[u8]) -> Result<usize, hidapi::HidError>;
+    /// Read one IN report, blocking up to `timeout` ms. `Ok(0)` = timeout/no-data
+    /// (NOT an error); `Ok(n>0)` = real read. Mirrors `hidapi::HidDevice::read_timeout`.
+    fn read_timeout(&self, buf: &mut [u8], timeout: i32) -> Result<usize, hidapi::HidError>;
+}
+
+impl RawHid for hidapi::HidDevice {
+    fn write(&self, data: &[u8]) -> Result<usize, hidapi::HidError> {
+        // Fully-qualified-by-type: REQUIRED. A bare `self.write(data)` would resolve
+        // to `RawHid::write` (the method we are defining) and recurse infinitely —
+        // see "Known Gotchas". `hidapi::HidDevice::write` calls hidapi's real impl.
+        hidapi::HidDevice::write(self, data)
+    }
+    fn read_timeout(&self, buf: &mut [u8], timeout: i32) -> Result<usize, hidapi::HidError> {
+        hidapi::HidDevice::read_timeout(self, buf, timeout)
+    }
+}
+
 // Default constants
 pub const DEFAULT_VENDOR_ID: u16 = 0xFEED;
 pub const DEFAULT_PRODUCT_ID: u16 = 0x0000;
@@ -302,6 +330,10 @@ fn try_send_once(
 /// the device buffer is full it NAKs the transfer and the host's `write()`
 /// blocks until space frees. Reports are never dropped, so burst-write is safe
 /// for ANY title length. See IMPLEMENTATION_PLAN.md.
+///
+/// HID I/O note: the interface this operates on (`&HidDevice`) now also implements
+/// the [`RawHid`] trait; this function is scheduled to be genericized over
+/// `impl RawHid` in the next subtask to enable a `FakeHid` test double.
 fn burst_to_one(
     interface: &HidDevice,
     data: &[u8],
