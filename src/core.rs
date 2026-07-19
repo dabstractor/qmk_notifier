@@ -60,11 +60,13 @@ pub fn list_hid_devices() -> Result<(), QmkError> {
 /// overhead, leaving `REPORT_LENGTH - 2` = 30 bytes of payload per report.
 const PAYLOAD_PER_REPORT: usize = REPORT_LENGTH - 2;
 
-/// Ceiling on how many IN-side reports we drain after a burst. Today the
-/// keyboard never acks (its ack is silently dropped by `send_raw_hid`), so the
-/// drain is a no-op. But with a persistent handle we MUST drain once the
-/// firmware ack bug is ever fixed, otherwise acks accumulate in the kernel IN
-/// buffer and eventually stall `raw_hid_send` on the device. Bounded so a
+/// Ceiling on how many IN-side reports we drain after a burst. The firmware
+/// sends a 32-byte reply per report (fixed in qmk-notifier commit `01a51935`,
+/// which corrected the response size from the header-stripped `30` to the full
+/// `RAW_REPORT_SIZE = 32`). v0.2.x of this crate only *drains/discards* those
+/// replies; the v0.3.0 typed-command path reads and parses them. Draining is
+/// still required with a persistent handle so replies don't accumulate in the
+/// kernel IN buffer and stall `raw_hid_send` on the device. Bounded so a
 /// misbehaving IN endpoint can't wedge the notifier.
 const IN_DRAIN_MAX: usize = 32;
 
@@ -243,12 +245,14 @@ fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose:
         }
     }
 
-    // Drain any pending IN-side reports (non-blocking). Today the keyboard's
-    // ack is silently dropped by send_raw_hid (it requires length ==
-    // RAW_EPSIZE), so nothing accumulates and the first read returns Ok(0)
-    // immediately (one cheap poll) and we stop. But with a persistent handle
-    // we MUST drain once the firmware ack bug is fixed, otherwise acks
-    // accumulate and eventually stall raw_hid_send on the device.
+    // Drain any pending IN-side reports (non-blocking). The firmware sends a
+    // valid 32-byte reply per report (qmk-notifier commit `01a51935`, which
+    // fixed the response size from the header-stripped `30` to `RAW_REPORT_SIZE`
+    // = 32); the old "ack silently dropped by send_raw_hid because length ==
+    // RAW_EPSIZE" note described the pre-fix firmware. v0.2.x of this crate
+    // discards the reply here; the v0.3.0 typed-command path reads and parses
+    // it instead. Draining keeps a persistent handle from stalling on
+    // accumulated replies.
     //
     // Note: read_timeout(0) returns Ok(0) on "no data" (poll times out), not an
     // error, so we break on Ok(0)/Err and only keep draining on a real read
