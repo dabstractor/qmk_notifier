@@ -331,14 +331,14 @@
               "type": "Task",
               "id": "P1.M4.T2",
               "title": "Dependency cleanup and version bump",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Remove unused dependencies (toml, serde, dirs) from Cargo.toml and bump the crate version from 0.2.1 to 0.3.0.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T2.S1",
                   "title": "Remove unused deps and bump version to 0.3.0",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M3.T3.S1"
@@ -362,7 +362,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T3.S1",
                   "title": "Update README.md with v0.3.0 API surface and typed-command documentation",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M4.T1.S1",
