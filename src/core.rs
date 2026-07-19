@@ -16,7 +16,7 @@ pub const REPORT_LENGTH: usize = 32;
 // `pub(crate)` (not `pub`): internal transport constants, NOT public API.
 //
 // The 5 command constants (CMD_DISCRIMINATOR, CMD_QUERY_INFO, CMD_QUERY_CALLBACK,
-// CMD_SET_OS, CMD_APPLY_HOST_CONTEXT) have a real consumer: `build_typed_payload`
+// CMD_SET_OS, CMD_APPLY_HOST_CONTEXT) have a real consumer: `build_command_data`
 // (P1.M1.T2.S1) references them in compiled code, so they carry no
 // `#[allow(dead_code)]`. RESPONSE_MARKER is consumed by `parse_reply`;
 // REPLY_READ_TIMEOUT_MS by `burst_to_one`'s bounded reply capture. `parse_reply`
@@ -39,6 +39,12 @@ pub(crate) const CMD_APPLY_HOST_CONTEXT: u8 = 0x05;
 /// QUERY_CALLBACK sweep against a non-capable device may want to lower it (each
 /// query against a silent device waits up to this long).
 const REPLY_READ_TIMEOUT_MS: i32 = 1000;
+
+/// ETX terminator byte appended to every on-wire payload (PRD §14 invariant 1).
+/// Used by both the SendMessage (legacy string) path and the typed-command
+/// path in `build_command_data`; the caller (`run`) appends NOTHING — the ETX
+/// is already in the returned payload (architecture doc §build_command_data).
+pub(crate) const ETX_TERMINATOR_BYTE: u8 = 0x03;
 
 pub fn parse_hex_or_decimal(input: &str) -> Result<u16, QmkError> {
     if input.starts_with("0x") || input.starts_with("0X") {
@@ -131,7 +137,7 @@ const SEND_RETRIES: usize = 1;
 /// `data` carries ONLY the payload after the `0x81 0x9F` magic header:
 /// [`burst_to_one`] prepends that header (and the leading report-ID byte) per
 /// 33-byte report. For legacy strings the caller appends the `0x03` ETX terminator
-/// first; for typed commands `build_typed_payload` produces the `[0xF0][cmd][args]`
+/// first; for typed commands `build_command_data` produces the `[0xF0][cmd][args]`
 /// [0x03]` payload (PRD §4, §10.1). Multi-report burst-write and the device cache
 /// are shared by all command types.
 pub fn send_raw_report(
@@ -375,24 +381,34 @@ fn batches_for(data: &[u8]) -> usize {
     (data.len() + REPORT_LENGTH - 3) / PAYLOAD_PER_REPORT
 }
 
-/// Build the ETX-terminated wire payload for a typed [`crate::RunCommand`],
+/// Build the ETX-terminated on-wire payload for ANY [`crate::RunCommand`],
 /// ready to hand unchanged to [`send_raw_report`].
 ///
-/// Returns `[0xF0][cmd_id][args…][0x03]` — the typed discriminator (`0xF0`),
-/// the command-ID byte, command-specific argument bytes, then the `0x03` ETX
-/// terminator. [`send_raw_report`] / [`burst_to_one`] prepend the per-report
-/// `[0x00][0x81][0x9F]` framing, so the firmware-side layout is
-/// `[0x81][0x9F][0xF0][cmd_id][args…][0x03]` — the discriminator lands at
-/// firmware `data[2]` (PRD §8; canonical layout in
-/// `plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md` §Typed-Command
-/// Framing). The returned `Vec` therefore starts with `0xF0`, NOT with
-/// `0x81 0x9F` (that header is added by [`burst_to_one`]).
+/// This is the SINGLE source of truth for on-wire payloads (architecture doc
+/// §build_command_data, Design Decision #1): the caller (`run()`) appends
+/// NOTHING — the [`ETX_TERMINATOR_BYTE`] terminator is already in the returned
+/// payload.
 ///
-/// The payload is chunked by the SAME multi-report path as legacy strings
-/// ([`batches_for`] / [`burst_to_one`], 30 payload bytes/report), so
-/// `APPLY_HOST_CONTEXT` may span reports — its callback-id list is uncapped.
-/// Because the ETX is appended here, the caller passes the `Vec` directly to
-/// [`send_raw_report`] with no further framing.
+/// # Variant → payload shape
+///
+/// - **SendMessage** (legacy string path): returns the raw message bytes
+///   followed by a single [`ETX_TERMINATOR_BYTE`] — NO `0xF0` discriminator
+///   (PRD §14 invariant 1). The message may span multiple reports via
+///   [`batches_for`] / [`burst_to_one`] like any other payload.
+/// - **Typed commands** (`QueryInfo` / `QueryCallback` / `SetOs` /
+///   `ApplyHostContext`): return `[0xF0][cmd_id][args…][ETX]` — the typed
+///   discriminator (`CMD_DISCRIMINATOR` = `0xF0`), the command-ID byte,
+///   command-specific argument bytes, then [`ETX_TERMINATOR_BYTE`].
+///   [`send_raw_report`] / [`burst_to_one`] prepend the per-report
+///   `[0x00][0x81][0x9F]` framing, so the firmware-side layout is
+///   `[0x81][0x9F][0xF0][cmd_id][args…][0x03]` — the discriminator lands at
+///   firmware `data[2]` (PRD §8; canonical layout in
+///   `plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md`
+///   §Typed-Command Framing). The returned `Vec` therefore starts with `0xF0`,
+///   NOT with `0x81 0x9F` (that header is added by [`burst_to_one`]).
+/// - **ListDevices** is NOT a wire command (`run()` routes it to
+///   [`list_hid_devices`]); this builder returns an empty `Vec` defensively so
+///   a misroute is inert rather than a panic.
 ///
 /// Per-variant arg layouts (`firmware_wire_contract.md` §Command Table):
 /// - [`crate::RunCommand::QueryInfo`]        (id `0x01`): no args.
@@ -404,22 +420,30 @@ fn batches_for(data: &[u8]) -> usize {
 ///   `flags` bit 0 is `clear_board`; `count` is the callback-id count; `id…`
 ///   the full desired enabled set (firmware diffs, disable-before-enable).
 ///
-/// Non-typed variants ([`crate::RunCommand::SendMessage`],
-/// [`crate::RunCommand::ListDevices`]) are NOT typed commands and return an
-/// empty `Vec`; the `run()` dispatch routes them through their own paths
-/// (legacy string + ETX; `list_hid_devices`) and never reaches the typed send.
-///
-/// Consumer: the `run()` typed-dispatch arm in [`crate::run`] (P1.M1.T2.S2).
-/// This is the request-side counterpart to the reply-side `parse_reply`
-/// (P1.M1.T3); the payload it returns feeds the unchanged
+/// Consumer: [`crate::run`] via `lib.rs::build_payload` (the thin verbose
+/// wrapper). This is the request-side counterpart to the reply-side
+/// [`parse_reply`] (P1.M1.T3); the payload it returns feeds the unchanged
 /// [`send_raw_report`] / [`burst_to_one`] send path.
-pub(crate) fn build_typed_payload(cmd: &crate::RunCommand) -> Vec<u8> {
+pub(crate) fn build_command_data(command: &crate::RunCommand) -> Vec<u8> {
     use crate::RunCommand;
 
+    // Legacy string path: raw message bytes + single ETX. NO 0xF0 discriminator.
+    // (PRD §14 invariant 1; the crate appends the ETX, not the caller.)
+    if let RunCommand::SendMessage(msg) = command {
+        let mut data = msg.as_bytes().to_vec();
+        data.push(ETX_TERMINATOR_BYTE);
+        return data;
+    }
+    // Not a wire command — builder is defensive (run() never calls us for this).
+    if matches!(command, RunCommand::ListDevices) {
+        return Vec::new();
+    }
+
+    // Typed path: [0xF0][cmd_id][args…][ETX]
     let mut payload = Vec::new();
     payload.push(CMD_DISCRIMINATOR);
 
-    match cmd {
+    match command {
         RunCommand::QueryInfo => {
             payload.push(CMD_QUERY_INFO);
         }
@@ -452,13 +476,14 @@ pub(crate) fn build_typed_payload(cmd: &crate::RunCommand) -> Vec<u8> {
             payload.push(callbacks.len().min(255) as u8);
             payload.extend_from_slice(callbacks);
         }
-        // Not typed commands — caller routes these elsewhere. Return empty so a
-        // misuse is inert rather than a panic (a panic would wedge a misrouted
-        // SendMessage in a live run() path).
-        RunCommand::SendMessage(_) | RunCommand::ListDevices => return Vec::new(),
+        // SendMessage and ListDevices are handled by the early-return guards
+        // above; they never reach this match.
+        RunCommand::SendMessage(_) | RunCommand::ListDevices => {
+            unreachable!("SendMessage/ListDevices handled by the early-return guards")
+        }
     }
 
-    payload.push(0x03); // ETX terminator (signals end-of-message before chunking)
+    payload.push(ETX_TERMINATOR_BYTE); // ETX terminator (signals end-of-message before chunking)
     payload
 }
 
@@ -479,7 +504,7 @@ pub(crate) fn build_typed_payload(cmd: &crate::RunCommand) -> Vec<u8> {
 /// than panicking. Consumer: the `run()` SendMessage AND typed-dispatch arms in
 /// [`crate::run`] (P1.M1.T3.S2), which feed it the reply bytes captured by
 /// [`send_raw_report`]'s [`burst_to_one`] bounded read. Request-side counterpart:
-/// [`build_typed_payload`].
+/// [`build_command_data`].
 pub(crate) fn parse_reply(response: &[u8]) -> crate::CommandResponse {
     use crate::CommandResponse;
     if response.is_empty() {
@@ -836,41 +861,63 @@ mod tests {
     }
 
     #[test]
-    fn build_typed_payload_query_info() {
+    fn build_command_data_query_info() {
         // QUERY_INFO (0x01): no args. Full payload = discriminator + cmd + ETX.
-        let payload = build_typed_payload(&RunCommand::QueryInfo);
-        assert_eq!(payload, vec![CMD_DISCRIMINATOR, CMD_QUERY_INFO, 0x03]);
+        let payload = build_command_data(&RunCommand::QueryInfo);
+        assert_eq!(
+            payload,
+            vec![CMD_DISCRIMINATOR, CMD_QUERY_INFO, ETX_TERMINATOR_BYTE]
+        );
         // Invariants every typed payload must satisfy (also asserted by exact-eq):
         assert_eq!(
             *payload.first().unwrap(),
             CMD_DISCRIMINATOR,
             "must start with 0xF0"
         );
-        assert_eq!(*payload.last().unwrap(), 0x03, "must end with ETX");
+        assert_eq!(
+            *payload.last().unwrap(),
+            ETX_TERMINATOR_BYTE,
+            "must end with ETX"
+        );
     }
 
     #[test]
-    fn build_typed_payload_query_callback() {
+    fn build_command_data_query_callback() {
         // QUERY_CALLBACK (0x02): one arg = the registry index.
-        let payload = build_typed_payload(&RunCommand::QueryCallback(7));
+        let payload = build_command_data(&RunCommand::QueryCallback(7));
         assert_eq!(
             payload,
-            vec![CMD_DISCRIMINATOR, CMD_QUERY_CALLBACK, 7, 0x03]
+            vec![
+                CMD_DISCRIMINATOR,
+                CMD_QUERY_CALLBACK,
+                7,
+                ETX_TERMINATOR_BYTE
+            ]
         );
 
         // Boundary: index 0 and 255 must still serialize (u8 range, no truncation).
         assert_eq!(
-            build_typed_payload(&RunCommand::QueryCallback(0)),
-            vec![CMD_DISCRIMINATOR, CMD_QUERY_CALLBACK, 0, 0x03]
+            build_command_data(&RunCommand::QueryCallback(0)),
+            vec![
+                CMD_DISCRIMINATOR,
+                CMD_QUERY_CALLBACK,
+                0,
+                ETX_TERMINATOR_BYTE
+            ]
         );
         assert_eq!(
-            build_typed_payload(&RunCommand::QueryCallback(u8::MAX)),
-            vec![CMD_DISCRIMINATOR, CMD_QUERY_CALLBACK, u8::MAX, 0x03]
+            build_command_data(&RunCommand::QueryCallback(u8::MAX)),
+            vec![
+                CMD_DISCRIMINATOR,
+                CMD_QUERY_CALLBACK,
+                u8::MAX,
+                ETX_TERMINATOR_BYTE
+            ]
         );
     }
 
     #[test]
-    fn build_typed_payload_set_os() {
+    fn build_command_data_set_os() {
         // os_byte mirrors QMK os_variant_t (firmware_wire_contract.md §SET_OS).
         for (os, os_byte) in [
             (HostOs::Unsure, 0u8),
@@ -879,19 +926,19 @@ mod tests {
             (HostOs::Macos, 3u8),
             (HostOs::Ios, 4u8),
         ] {
-            let payload = build_typed_payload(&RunCommand::SetOs(os));
+            let payload = build_command_data(&RunCommand::SetOs(os));
             assert_eq!(
                 payload,
-                vec![CMD_DISCRIMINATOR, CMD_SET_OS, os_byte, 0x03],
+                vec![CMD_DISCRIMINATOR, CMD_SET_OS, os_byte, ETX_TERMINATOR_BYTE],
                 "SET_OS({os:?}) must serialize to [0xF0][0x03][{os_byte}][ETX]"
             );
         }
     }
 
     #[test]
-    fn build_typed_payload_apply_host_context_set_layer() {
+    fn build_command_data_apply_host_context_set_layer() {
         // layer = Some(224) (HOST_LAYER_BASE), 3 callbacks, clear_board set.
-        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+        let payload = build_command_data(&RunCommand::ApplyHostContext {
             layer: Some(224),
             callbacks: vec![10, 20, 30],
             clear_board: true,
@@ -908,15 +955,15 @@ mod tests {
                 10,
                 20,
                 30,
-                0x03
+                ETX_TERMINATOR_BYTE
             ]
         );
     }
 
     #[test]
-    fn build_typed_payload_apply_host_context_clear_layer() {
+    fn build_command_data_apply_host_context_clear_layer() {
         // layer = None ⇒ wire byte 0xFF (clear host layer); clear_board false ⇒ flags 0.
-        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+        let payload = build_command_data(&RunCommand::ApplyHostContext {
             layer: None,
             callbacks: Vec::new(),
             clear_board: false,
@@ -930,30 +977,56 @@ mod tests {
                 0xFF,
                 0x00,
                 0,
-                0x03
+                ETX_TERMINATOR_BYTE
             ]
         );
     }
 
+    // NEW — SendMessage now produces a REAL payload (reconciliation with the
+    // architecture doc: build_command_data is the single source of truth for
+    // on-wire payloads, including the legacy string path). The payload is the
+    // raw message bytes + a single ETX; it must NOT carry the 0xF0 discriminator
+    // (that is the typed-command path only).
     #[test]
-    fn build_typed_payload_non_typed_returns_empty() {
-        // SendMessage / ListDevices are NOT typed commands; the run() dispatch
-        // routes them elsewhere. The builder returns an empty Vec (inert), never a
-        // panic, so a misroute can't wedge a live send path.
-        assert_eq!(
-            build_typed_payload(&RunCommand::SendMessage("App\x1DTitle".to_string())),
-            Vec::new()
+    fn build_command_data_send_message() {
+        // Legacy string path: raw bytes + ETX, NO 0xF0 discriminator.
+        let payload = build_command_data(&RunCommand::SendMessage("App\x1DTitle".to_string()));
+        let mut expected = "App\x1DTitle".as_bytes().to_vec();
+        expected.push(ETX_TERMINATOR_BYTE);
+        assert_eq!(payload, expected);
+        assert!(
+            !payload.contains(&CMD_DISCRIMINATOR),
+            "SendMessage must NOT carry the 0xF0 discriminator"
         );
-        assert_eq!(build_typed_payload(&RunCommand::ListDevices), Vec::new());
+        assert_eq!(
+            *payload.last().unwrap(),
+            ETX_TERMINATOR_BYTE,
+            "must end with ETX"
+        );
+    }
+
+    // KEPT — ListDevices is not a wire command; builder returns empty defensively.
+    #[test]
+    fn build_command_data_list_devices_empty() {
+        assert_eq!(build_command_data(&RunCommand::ListDevices), Vec::new());
+    }
+
+    // Pin the ETX const value against regression. The assertion is on a const,
+    // so clippy::assertions_on_constants is allowed here deliberately (the test
+    // exists to make a value drift a compile-test failure).
+    #[allow(clippy::assertions_on_constants)]
+    #[test]
+    fn etx_terminator_byte_is_0x03() {
+        assert_eq!(ETX_TERMINATOR_BYTE, 0x03);
     }
 
     #[test]
-    fn build_typed_payload_multi_report_chunking() {
+    fn build_command_data_multi_report_chunking() {
         // A large APPLY_HOST_CONTEXT must span multiple 30-byte reports via the
         // EXISTING batches_for path (no bespoke framing). 40 callback ids ⇒ payload
         // = [0xF0, 0x05, layer, flags, count=40, <40 ids>, ETX] = 46 bytes ⇒ 2 reports.
         let callbacks: Vec<u8> = (0..40u8).collect();
-        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+        let payload = build_command_data(&RunCommand::ApplyHostContext {
             layer: Some(224),
             callbacks: callbacks.clone(),
             clear_board: false,
@@ -961,15 +1034,24 @@ mod tests {
         // 5 header bytes (disc+cmd+layer+flags+count) + 40 ids + 1 ETX = 46.
         assert_eq!(payload.len(), 46);
         assert_eq!(*payload.first().unwrap(), CMD_DISCRIMINATOR);
-        assert_eq!(*payload.last().unwrap(), 0x03, "ETX must be the final byte");
+        assert_eq!(
+            *payload.last().unwrap(),
+            ETX_TERMINATOR_BYTE,
+            "ETX must be the final byte"
+        );
         // The id bytes are copied verbatim into the payload (after the 5-byte header).
         assert_eq!(&payload[5..5 + callbacks.len()], &callbacks[..]);
         // batches_for (the unchanged chunker): ceil(46 / 30) = 2 reports.
         assert_eq!(batches_for(&payload), 2, "46 payload bytes ⇒ 2 reports");
         // Sanity: a payload that fits one report still chunks to 1.
-        assert_eq!(batches_for(&build_typed_payload(&RunCommand::QueryInfo)), 1);
+        assert_eq!(batches_for(&build_command_data(&RunCommand::QueryInfo)), 1);
     }
 
+    // Pin every wire-protocol const value. Several assertions are on consts
+    // (e.g. REPLY_READ_TIMEOUT_MS > 0), so clippy::assertions_on_constants is
+    // allowed here deliberately — these exist to make a const drift a
+    // compile-time test failure.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn typed_command_constants_match_firmware_contract() {
         // Wire-protocol values are the canonical source of truth from the firmware
@@ -1000,20 +1082,23 @@ mod tests {
     }
 
     #[test]
-    fn build_typed_payload_apply_host_context_representative_ids() {
+    fn build_command_data_apply_host_context_representative_ids() {
         // Item-contract representative case: callbacks=[1,5,10] ⇒ count=3 then
         // the three id bytes verbatim. Full byte sequence (firmware_wire_contract.md
         // §APPLY_HOST_CONTEXT request): [0xF0,0x05,layer,flags,count=3,1,5,10,0x03].
-        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+        let payload = build_command_data(&RunCommand::ApplyHostContext {
             layer: Some(224), // HOST_LAYER_BASE
             callbacks: vec![1, 5, 10],
             clear_board: false,
         });
-        assert_eq!(payload, vec![0xF0, 0x05, 224, 0x00, 3, 1, 5, 10, 0x03]);
+        assert_eq!(
+            payload,
+            vec![0xF0, 0x05, 224, 0x00, 3, 1, 5, 10, ETX_TERMINATOR_BYTE]
+        );
     }
 
     #[test]
-    fn build_typed_payload_apply_host_context_clamps_count_at_255() {
+    fn build_command_data_apply_host_context_clamps_count_at_255() {
         // Edge case (P1.M2.T1.S2 contract): callbacks.len() > 255 must CLAMP the
         // count byte to 255 — NOT truncate. `256u8 as u8 == 0`, which would tell
         // the firmware "zero callbacks follow" while 256 id bytes + ETX actually
@@ -1022,7 +1107,7 @@ mod tests {
         // unreachable on the happy path; the clamp is the defensive contract and
         // this test pins it against regression.
         let callbacks: Vec<u8> = (0..=255u8).collect(); // 256 elements (0..255)
-        let payload = build_typed_payload(&RunCommand::ApplyHostContext {
+        let payload = build_command_data(&RunCommand::ApplyHostContext {
             layer: Some(224),
             callbacks,
             clear_board: false,
@@ -1034,7 +1119,7 @@ mod tests {
         assert_eq!(payload.len(), 5 + 256 + 1, "header(5) + ids(256) + ETX(1)");
         assert_eq!(
             *payload.last().unwrap(),
-            0x03,
+            ETX_TERMINATOR_BYTE,
             "ETX must remain the final byte"
         );
         // PROOF OF FIX: with the old `callbacks.len() as u8`, the count byte here

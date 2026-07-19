@@ -362,37 +362,22 @@ pub fn parse_cli_args() -> Result<CliArgs, QmkError> {
 /// Build the on-wire payload for `command` — the bytes AFTER the `0x81 0x9F`
 /// magic header (which `burst_to_one` prepends per 33-byte report).
 ///
-/// - `SendMessage` → the caller's window string plus the `0x03` ETX terminator
-///   (PRD §14 invariant 1; ETX is appended HERE, not by build_typed_payload,
-///   which returns an empty payload for SendMessage).
-/// - Typed commands (`QueryInfo`/`QueryCallback`/`SetOs`/`ApplyHostContext`) →
-///   delegate to `core::build_typed_payload`, which produces the
-///   `[0xF0][cmd][args][0x03]` form (PRD §4, §10.1).
-/// - `ListDevices` → empty (it never reaches a send; routed elsewhere by `run`).
+/// Delegates EVERY arm to [`core::build_command_data`] (the single source of
+/// truth for on-wire payloads, per the architecture doc §build_command_data),
+/// and preserves the SendMessage verbose length print as a side-effect. With the
+/// reconciliation, `SendMessage`, the typed commands, and `ListDevices` all flow
+/// through one builder; nothing is framed inline here.
 fn build_payload(command: &RunCommand, verbose: bool) -> Vec<u8> {
-    match command {
-        RunCommand::SendMessage(message) => {
-            let input = message.as_bytes();
-            let mut data = Vec::with_capacity(input.len() + 1);
-            data.extend_from_slice(input);
-            data.push(0x03); // ETX terminator (PRD §14 invariant 1)
-            if verbose {
-                println!(
-                    "Message length: {} bytes (including ETX terminator)",
-                    data.len()
-                );
-            }
-            data
+    let data = core::build_command_data(command);
+    if verbose {
+        if let RunCommand::SendMessage(_) = command {
+            println!(
+                "Message length: {} bytes (including ETX terminator)",
+                data.len()
+            );
         }
-        // build_typed_payload appends the ETX (0x03) terminator internally and
-        // returns empty Vec for SendMessage/ListDevices — by construction only
-        // the typed variants reach this arm.
-        RunCommand::QueryInfo
-        | RunCommand::QueryCallback(_)
-        | RunCommand::SetOs(_)
-        | RunCommand::ApplyHostContext { .. } => core::build_typed_payload(command),
-        RunCommand::ListDevices => Vec::new(),
     }
+    data
 }
 
 /// Execute the notifier command described by `params` and return the parsed
@@ -434,7 +419,7 @@ pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError> {
         // payload → burst-send → parse the first captured reply (or Timeout if
         // no device replied within the bounded read). `command` binds to
         // &RunCommand (match ergonomics on `&params.command`), so it's passable
-        // straight to build_payload / core::build_typed_payload.
+        // straight to build_payload / core::build_command_data.
         command @ (RunCommand::SendMessage(_)
         | RunCommand::QueryInfo
         | RunCommand::QueryCallback(_)
@@ -820,7 +805,7 @@ mod tests {
     #[test]
     fn test_run_query_callback_dispatches_to_send() {
         // Same dispatch proof as QueryInfo, but for an arg-carrying variant
-        // (index = 5). build_typed_payload correctness is S1's job; here we only
+        // (index = 5). build_command_data correctness is S1's job; here we only
         // assert the arm reaches send_raw_report.
         let params = RunParameters::new(
             RunCommand::QueryCallback(5),
@@ -858,7 +843,7 @@ mod tests {
     #[test]
     fn test_run_apply_host_context_dispatches_to_send() {
         // Struct-arg variant: layer=Some(224), 3 callbacks, clear_board=true.
-        // Exercises the multi-field payload path through build_typed_payload and
+        // Exercises the multi-field payload path through build_command_data and
         // proves ApplyHostContext dispatches.
         let params = RunParameters::new(
             RunCommand::ApplyHostContext {

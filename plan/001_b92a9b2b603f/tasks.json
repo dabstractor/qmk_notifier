@@ -113,21 +113,21 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Pure Framing & Reply Parsing Functions",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Implement the pure, hardware-free functions that build typed-command payloads from RunCommand variants and parse 32-byte device replies into CommandResponse. These are the heart of the typed-command transport and are fully unit-testable without any HID hardware.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Implement build_command_data payload builder",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Pure function in core.rs that converts any RunCommand variant into the logical payload bytes (what goes after the 0x81 0x9F magic header in the wire format). For strings: [string_bytes, 0x03 ETX]. For typed commands: [0xF0, cmd_id, args, 0x03 ETX].",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Implement build_command_data for SendMessage and single-report typed commands",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S2",
