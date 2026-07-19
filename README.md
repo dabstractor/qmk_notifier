@@ -190,7 +190,7 @@ Rules shared across all OSes stay in the **default** `DEFINE_SERIAL_*` maps:
 /* Default maps: OS-AGNOSTIC rules live here (gaming, calculator, …). */
 DEFINE_SERIAL_COMMANDS({
     { WT("steam_app*", "*"), &disable_vim },
-    { "cs2", "Counter-Strike 2"}, &disable_vim },
+    { WT("cs2", "Counter-Strike 2"), &disable_vim },
 });
 DEFINE_SERIAL_LAYERS({
     { "*calculator", _NUMPAD },

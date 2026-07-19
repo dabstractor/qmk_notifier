@@ -1258,7 +1258,7 @@ cat > /tmp/nfa_real.c <<'EOF'
 int main(void){
   printf("%d\n", pattern_match("\\w+","hello",1));                       /* 1 */
   printf("%d\n", pattern_match("\\b\\w+\\b\\s+\\b\\w+\\b","hello world",1)); /* 1 */
-  printf("%d\n", pattern_match("^\\w+@\\w+$","user_host",1));            /* 1 */
+  printf("%d\n", pattern_match("^\\w+@\\w+$","user@host",1));             /* 1 */
   printf("%d\n", pattern_match("v\\.code","v.code",1));                  /* 1 */
   printf("%d\n", pattern_match("a+b","aaab",1));                         /* 1 */
   printf("%d\n", pattern_match("*slack*","Slack - general",0));          /* 1 */
