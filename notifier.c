@@ -438,6 +438,17 @@ bool process_full_message(char *data) {
     } else {
         uprintf("Did not match message %s on any command\n", received_command);
     }
+
+    /* LAYER track (step 9 - mirrors the command track above): print the
+     * matched layer index, or a miss. The index is sufficient for debugging;
+     * printing the matched pattern would require capturing a layer_map_t*
+     * pointer in the scan loops above, a dispatch change not warranted for a
+     * Minor debug issue. GS was already substituted to '|' by the loop above. */
+    if (layer_found != LAYER_UNSET) {
+        uprintf("Matched message %s on layer: %d\n", received_command, layer_found);
+    } else {
+        uprintf("Did not match message %s on any layer\n", received_command);
+    }
     #endif
 
     return command_found != NULL || layer_found != LAYER_UNSET;
