@@ -1,0 +1,12 @@
+h1.0 Bug Fix Requirements
+ h2.0 Overview
+ h2.1 Critical Issues (Must Fix)
+ h2.2 Major Issues (Should Fix)
+  h3.0 Issue 1: A malformed/truncated typed command permanently breaks legacy layer/command routing (typed reassembly desync)
+ h2.3 Minor Issues (Nice to Fix)
+  h3.1 Issue 2: README falsely reports the SET_OS typed-command tests as broken / pending a fix
+  h3.2 Issue 3: Matcher tested at NFA_MAX_PATTERN=2048 but firmware runs at 128 (test-fidelity gap)
+  h3.3 Issue 4: has_been_queried is written but never read
+ h2.4 Testing Summary
+---
+code:2 para:25 list:2 quote:1
