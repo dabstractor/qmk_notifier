@@ -108,6 +108,64 @@ uint8_t activated_layer = LAYER_UNSET;
 // reference to currently active command:
 command_map_t *current_command = {0};
 
+/* The host OS used for multi-OS map selection (§2 F8). Pushed in by the keymap
+ * via notifier_set_os(); never read from detected_host_os() directly (no link
+ * dependency on the OS-detection subsystem). OS_UNSURE ⇒ default maps only
+ * (invariant 17, §2 F8.2/F8.6). */
+os_variant_t current_os = OS_UNSURE;
+
+/* --- Per-OS weak accessors + selector (multi-OS overlay, §2 F8 / §8.3) --------
+ * Each accessor returns {NULL, 0} ("no OS-specific map") UNLESS overridden by a
+ * DEFINE_SERIAL_COMMANDS_OS / DEFINE_SERIAL_LAYERS_OS macro in the keymap. The
+ * symbol names MUST match the ##os token-paste in notifier.h EXACTLY — e.g.
+ * DEFINE_SERIAL_COMMANDS_OS(OS_MACOS,…) generates _notifier_get_command_map_OS_MACOS
+ * and _notifier_get_command_map_OS_MACOS_size; a typo here = link failure.
+ * select_*_map_os() dispatch by current_os; OS_UNSURE and any unexpected value
+ * resolve to {NULL, 0} so the default map is used (§8.3). A size of 0 makes the
+ * caller's scan loop run 0 iterations and fall through to the default map — this
+ * IS the backward-compat guarantee (invariant 19), so no #ifdef is needed. */
+
+/* command map, per OS — weak; overridden by DEFINE_SERIAL_COMMANDS_OS */
+__attribute__((weak)) command_map_t* _notifier_get_command_map_OS_LINUX(void)   { return NULL; }
+__attribute__((weak)) size_t         _notifier_get_command_map_OS_LINUX_size(void)   { return 0; }
+__attribute__((weak)) command_map_t* _notifier_get_command_map_OS_WINDOWS(void) { return NULL; }
+__attribute__((weak)) size_t         _notifier_get_command_map_OS_WINDOWS_size(void) { return 0; }
+__attribute__((weak)) command_map_t* _notifier_get_command_map_OS_MACOS(void)   { return NULL; }
+__attribute__((weak)) size_t         _notifier_get_command_map_OS_MACOS_size(void)   { return 0; }
+__attribute__((weak)) command_map_t* _notifier_get_command_map_OS_IOS(void)     { return NULL; }
+__attribute__((weak)) size_t         _notifier_get_command_map_OS_IOS_size(void)     { return 0; }
+
+/* layer map, per OS — weak; overridden by DEFINE_SERIAL_LAYERS_OS */
+__attribute__((weak)) layer_map_t* _notifier_get_layer_map_OS_LINUX(void)   { return NULL; }
+__attribute__((weak)) size_t       _notifier_get_layer_map_OS_LINUX_size(void)   { return 0; }
+__attribute__((weak)) layer_map_t* _notifier_get_layer_map_OS_WINDOWS(void) { return NULL; }
+__attribute__((weak)) size_t       _notifier_get_layer_map_OS_WINDOWS_size(void) { return 0; }
+__attribute__((weak)) layer_map_t* _notifier_get_layer_map_OS_MACOS(void)   { return NULL; }
+__attribute__((weak)) size_t       _notifier_get_layer_map_OS_MACOS_size(void)   { return 0; }
+__attribute__((weak)) layer_map_t* _notifier_get_layer_map_OS_IOS(void)     { return NULL; }
+__attribute__((weak)) size_t       _notifier_get_layer_map_OS_IOS_size(void)     { return 0; }
+
+/* Resolve the OS-specific command/layer map for `os`, or {NULL,0} if none.
+ * Dispatch by current_os; OS_UNSURE / unexpected => {NULL,0} => default-map fallback (§8.3). */
+static void select_command_map_os(os_variant_t os, command_map_t **map, size_t *size) {
+    switch (os) {
+        case OS_LINUX:   *map = _notifier_get_command_map_OS_LINUX();   *size = _notifier_get_command_map_OS_LINUX_size();   return;
+        case OS_WINDOWS: *map = _notifier_get_command_map_OS_WINDOWS(); *size = _notifier_get_command_map_OS_WINDOWS_size(); return;
+        case OS_MACOS:   *map = _notifier_get_command_map_OS_MACOS();   *size = _notifier_get_command_map_OS_MACOS_size();   return;
+        case OS_IOS:     *map = _notifier_get_command_map_OS_IOS();     *size = _notifier_get_command_map_OS_IOS_size();     return;
+        default:         *map = NULL; *size = 0; return;   /* OS_UNSURE / unexpected */
+    }
+}
+static void select_layer_map_os(os_variant_t os, layer_map_t **map, size_t *size) {
+    switch (os) {
+        case OS_LINUX:   *map = _notifier_get_layer_map_OS_LINUX();   *size = _notifier_get_layer_map_OS_LINUX_size();   return;
+        case OS_WINDOWS: *map = _notifier_get_layer_map_OS_WINDOWS(); *size = _notifier_get_layer_map_OS_WINDOWS_size(); return;
+        case OS_MACOS:   *map = _notifier_get_layer_map_OS_MACOS();   *size = _notifier_get_layer_map_OS_MACOS_size();   return;
+        case OS_IOS:     *map = _notifier_get_layer_map_OS_IOS();     *size = _notifier_get_layer_map_OS_IOS_size();     return;
+        default:         *map = NULL; *size = 0; return;
+    }
+}
+
 void activate_layer(uint8_t layer) {
     #ifdef CONSOLE_ENABLE
     uprintf("Activating layer %d\n", layer);

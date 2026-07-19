@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Multi-OS API & Dispatch Core",
-          "status": "Planned",
+          "status": "Researching",
           "description": "The header surface (notifier.h OS macros + decls), the header-only stub that lets notifier.c compile in the host test harness (qmk_stubs/os_detection.h), and the notifier.c state machine / dispatch changes (current_os global, per-OS weak accessors + selectors, notifier_set_os, OS-first/default-fallback scan in process_full_message). After this milestone, the module compiles and the multi-OS dispatch logic exists, but has no dedicated test coverage yet.",
           "tasks": [
             {
@@ -75,14 +75,14 @@
               "type": "Task",
               "id": "P1.M1.T3",
               "title": "notifier.c multi-OS core",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Extend the existing notifier.c (~339 lines) with the current_os global, the 16 per-OS weak accessor functions, the select_command_map_os/select_layer_map_os selector helpers, the notifier_set_os state-clearing function (idempotent + clear-on-change), and the per-track OS-first/default-fallback scan in process_full_message. The file grows to ~410 lines per PRD §8.1/§8.3/§8.6/§8.7.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T3.S1",
                   "title": "Per-OS weak accessors + select_command_map_os/select_layer_map_os selectors",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1",
@@ -104,7 +104,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S2",
                   "title": "notifier_set_os + process_full_message OS-first/default-fallback dispatch",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T3.S1"
