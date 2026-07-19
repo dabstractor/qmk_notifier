@@ -139,14 +139,14 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "test_notifier_os.c — multi-OS selection/fallback/clear host tests",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create a NEW ~150-line host test suite that stub-links against notifier.c (same -DQMK_KEYBOARD_H / -Iqmk_stubs flags as test_notifier_dispatch) and covers all six §11.2D minimum acceptance criteria for the multi-OS feature.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Write test_notifier_os.c covering F8/F9 (six §11.2D categories)",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T3.S2"
@@ -174,14 +174,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Extend run_notifier_stub_tests.sh + full acceptance gate verification",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Extend the existing stub-test runner to build+run the new test_notifier_os binary alongside test_notifier_dispatch, and run the complete acceptance gate (§11.2A/B/C/D) to confirm zero regressions across all suites.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Extend runner to build+run test_notifier_os and verify full §11.2A-D gate",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"

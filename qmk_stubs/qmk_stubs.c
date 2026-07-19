@@ -18,3 +18,9 @@ void raw_hid_send(uint8_t *data, uint8_t length) {
     (void)length;
     fprintf(stderr, "[stub] raw_hid_send response[0]=%u\n", data[0]);
 }
+
+/* Test-harness observable (NOT production code): exposes the file-static
+ * g_active_layer so host tests (test_notifier_os.c) can assert WHICH layer
+ * won. In a real QMK build layer_state provides this; the stub tracks it
+ * locally. Added for the multi-OS test harness (findings F6). */
+uint8_t stub_get_active_layer(void) { return g_active_layer; }
