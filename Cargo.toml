@@ -12,3 +12,6 @@ readme = "README.md"
 [dependencies]
 clap = "4.5.31"
 hidapi = "2.4.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

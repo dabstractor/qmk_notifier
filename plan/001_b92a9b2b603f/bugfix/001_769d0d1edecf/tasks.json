@@ -166,7 +166,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Public API, CLI & NFR Conformance (Issues 2, 4, 5)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Fix the three independent conformance issues: (2) restore parse_cli_args to its PRD-documented Result<RunParameters, QmkError> signature; (4) replace the hand-rolled unsafe extern C SIGPIPE binding with the maintained libc crate; (5) remove the undocumented -c short flag from --create-config. These are independent of the reply-capture work in M1.",
           "tasks": [
             {
@@ -251,14 +251,14 @@
               "type": "Task",
               "id": "P1.M2.T3",
               "title": "Isolate unsafe SIGPIPE Handling via libc Crate (Issue 4)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Replace the hand-rolled extern \"C\" { fn signal(...) } FFI in main.rs with the maintained libc crate's binding. The unsafe block remains (POSIX signal() is inherently unsafe), but the FFI declaration is no longer hand-rolled — it uses a widely-audited binding. This addresses the PRD §12 'No unsafe' NFR by using the most defensible isolation approach (the PRD's suggested fix option a).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T3.S1",
                   "title": "Replace extern C signal binding with libc::signal",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: main.rs:80-101 defines reset_sigpipe_to_default() with a hand-rolled extern \"C\" { fn signal(signum: i32, handler: SigHandler) -> SigHandler; } where type SigHandler = usize, const SIGPIPE: i32 = 13, const SIG_DFL: SigHandler = 0. The unsafe block is at main.rs:101. The function is called at main.rs:6 behind #[cfg(unix)]. Cargo.toml currently has only clap and hidapi in [dependencies] — no libc.\n2. INPUT: No dependencies.\n3. LOGIC: (a) Add libc to Cargo.toml as a Unix-only dependency: [target.'cfg(unix)'.dependencies] libc = \"0.2\". (b) In main.rs, remove the hand-rolled extern \"C\" block, the type SigHandler alias, and the const SIGPIPE/SIG_DFL definitions from reset_sigpipe_to_default. (c) Replace the body with: unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL); }. Use libc::SIGPIPE and libc::SIG_DFL constants from the libc crate. (d) Update the SAFETY doc comment to note the binding is now via the maintained libc crate. (e) Add #[cfg(unix)] use libc or use the fully-qualified libc:: prefix. Verify cargo build --release succeeds on the current platform. Mock: none — libc is a widely-used, well-audited crate.\n4. OUTPUT: main.rs no longer contains hand-rolled extern \"C\" FFI. The unsafe block uses libc::signal. SIGPIPE behavior is unchanged (process exits 141 on broken pipe).\n5. DOCS: [Mode A] Update the doc comment on reset_sigpipe_to_default (main.rs ~line 70-79) to mention it now uses the libc crate binding instead of hand-rolled FFI. Code-internal doc. NOTE: The PRD §12 NFR says 'No unsafe' — this fix uses the libc crate (PRD suggested fix option a) but the unsafe block is inherent to POSIX signal() and cannot be eliminated. Document this as an accepted, isolated deviation in the comment.",
@@ -289,7 +289,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Update README.md technical details and reply-parsing description",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S2",

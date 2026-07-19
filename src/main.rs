@@ -87,26 +87,34 @@ fn main() {
 /// quietly with SIGPIPE (exit 141) when a downstream consumer exits early
 /// (e.g. `qmk_notifier --list | head -1`). This restores that behavior.
 ///
-/// Uses raw `libc`-style syscalls via `extern "C"` so no extra dependency is
-/// required. On non-Unix targets this is a no-op (the helper is only called
-/// behind `#[cfg(unix)]`).
+/// The FFI binding goes through the maintained [`libc`] crate (PRD Issue-4
+/// suggested-fix option (a)) rather than a hand-rolled `extern "C"` block.
+/// `libc` is already a transitive dependency of `hidapi`, so this adds no new
+/// supply-chain surface. On non-Unix targets this function is absent (only
+/// compiled behind `#[cfg(unix)]`, and only called from `main` behind the same
+/// gate).
+///
+/// # Deviation from PRD §12 ("No `unsafe`")
+///
+/// The `unsafe` block below is inherent to POSIX `signal(2)` — calling any FFI
+/// function is `unsafe` by definition, and there is no safe Rust API to reset
+/// the SIGPIPE disposition before std initializes. This is an **accepted,
+/// isolated deviation** from the literal §12 wording: the NFR's intent is "no
+/// `unsafe` in the HID I/O transport path" (the sentence's actual subject), and
+/// this code lives in the **binary** (`main.rs`), is unrelated to HID, and uses
+/// only the well-audited `libc` binding. It is the single `unsafe` block in the
+/// entire crate.
 #[cfg(unix)]
 fn reset_sigpipe_to_default() {
-    /// Signal disposition is the address of a handler function, `SIG_DFL` (0)
-    /// or `SIG_IGN` (1).
-    type SigHandler = usize;
-    extern "C" {
-        fn signal(signum: i32, handler: SigHandler) -> SigHandler;
-    }
-
-    const SIGPIPE: i32 = 13;
-    const SIG_DFL: SigHandler = 0;
-
     // SAFETY: `signal()` is a thread-safe-enough POSIX call for one-shot
     // process-global disposition reset performed before any threads are spawned.
     // `SIG_DFL` is a well-known sentinel value. Ignoring the return value is
     // fine: worst case the disposition stays unchanged, which is benign.
+    //
+    // The FFI binding is provided by the maintained `libc` crate (a transitive
+    // dependency of `hidapi`, already resolved in Cargo.lock) rather than a
+    // hand-rolled `extern "C"` block.
     unsafe {
-        signal(SIGPIPE, SIG_DFL);
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 }
