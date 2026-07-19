@@ -234,6 +234,36 @@ void deactivate_layer(void) {
     activated_layer = LAYER_UNSET;
 }
 
+/* set_host_layer (§14) — Host layer tracker ONLY. Operates on host_layer,
+ * independent of the board activated_layer (architecture "two independent state
+ * planes" / invariant 21). It wraps QMK layer_on/layer_off exactly as the board
+ * activate_layer/deactivate_layer do, but for the HOST tracker:
+ *   - layer == LAYER_UNSET (0xFF): clear the host layer (turn it off if one was
+ *     set, then mark host_layer unset).
+ *   - otherwise (a real host layer, reserved >= HOST_LAYER_BASE 224 per §14/§4.6
+ *     so it resolves above board layers under QMK's highest-layer-wins rule):
+ *     turn off the previous host layer first, then layer_on the new one.
+ * This function touches ONLY host_layer — it NEVER reads or writes the board
+ * activated_layer, and it does NOT check or clear board state (that is clear_board's
+ * job in the APPLY_HOST_CONTEXT handler, P1.M2.T2.S3, which calls this). Per RISK-2
+ * there is NO layer-range validation here: the >= 224 reservation is a host-side
+ * convention the firmware trusts (no collision because host_layer and
+ * activated_layer are distinct variables tracking distinct layer ranges). */
+static void set_host_layer(uint8_t layer) {
+    if (layer == LAYER_UNSET) {                 /* (a) clear the host layer */
+        if (host_layer != LAYER_UNSET) {
+            layer_off(host_layer);
+        }
+        host_layer = LAYER_UNSET;
+    } else {                                    /* (b) set a real host layer (>= 224) */
+        if (host_layer != LAYER_UNSET) {
+            layer_off(host_layer);              /* turn off the old host layer first */
+        }
+        layer_on(layer);
+        host_layer = layer;
+    }
+}
+
 void enable_command(command_map_t *command) {
     current_command = command;
     // Guard against a NULL on_enable callback, mirroring the symmetric guard on
