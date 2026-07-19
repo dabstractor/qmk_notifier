@@ -60,8 +60,8 @@ pub(crate) const CMD_QUERY_INFO: u8 = 0x01;
 pub(crate) const CMD_QUERY_CALLBACK: u8 = 0x02;
 pub(crate) const CMD_SET_OS: u8 = 0x03;
 pub(crate) const CMD_APPLY_HOST_CONTEXT: u8 = 0x05;
-/// Bounded timeout (ms) for reading the first typed reply after a burst
-/// (`burst_to_one`'s first-reply capture).
+/// Bounded timeout (ms) for reading each device reply after a burst
+/// (`burst_to_one` reads up to `batch_count` replies at this timeout each).
 /// Must be > 0 (unlike the drain's non-blocking timeout=0) so the read BLOCKS
 /// for a real reply rather than polling. 1000 ms is a conservative bound; P4's
 /// QUERY_CALLBACK sweep against a non-capable device may want to lower it (each
@@ -143,12 +143,13 @@ const SEND_RETRIES: usize = 1;
 
 /// Burst-send `data` to every raw-HID interface matching the VID/PID/usage-page/
 /// usage predicate, retrying the whole send (with a cache rebuild) once on a
-/// total failure. Returns the FIRST device reply captured by the burst-write path.
+/// total failure. Returns the LAST device reply captured by the burst-write path
+/// (the ETX-report reply).
 ///
 /// # Return
-/// - `Ok(Some(bytes))` — every matched device accepted the burst AND at least the
-///   first device replied within `REPLY_READ_TIMEOUT_MS` (the bounded read in
-///   `burst_to_one`). `bytes` is that first reply's raw IN report (up to
+/// - `Ok(Some(bytes))` — every matched device accepted the burst AND at least
+///   one device replied within `REPLY_READ_TIMEOUT_MS` (the bounded reads in
+///   `burst_to_one`). `bytes` is the last (ETX-report) reply's raw IN report (up to
 ///   `REPORT_LENGTH` + 1 bytes). Decode it downstream via `parse_reply`
 ///   into a [`crate::CommandResponse`] (PRD §8, §10.2).
 /// - `Ok(None)` — the burst succeeded but NO device replied within
@@ -305,23 +306,28 @@ fn try_send_once(
 }
 
 /// Burst-write `data` to a single device as `batch_count` back-to-back raw-HID
-/// reports, then CAPTURE the first device reply (bounded wait), then drain any
+/// reports, then CAPTURE the last device reply (the ETX-report reply, which
+/// carries the real result), then drain any
 /// surplus IN-side reports.
 ///
 /// Returns `(false, None)` on the first write error; otherwise `(true, reply)`,
 /// where `reply` is `Some(bytes)` when a reply arrived within
 /// `REPLY_READ_TIMEOUT_MS`, or `None` on timeout / read failure. The bool is the
 /// write-success flag (same semantics as the pre-v0.3.0 `-> bool` form); the
-/// `Option<Vec<u8>>` is the FIRST captured IN report, decoded downstream by
+/// `Option<Vec<u8>>` is the LAST captured IN report (the ETX-report reply),
 /// `parse_reply` into a `CommandResponse` (PRD §8, §10.2).
 ///
-/// Reply capture (v0.3.0): after the burst-write succeeds, the FIRST IN report is
-/// read with a bounded `read_timeout(REPLY_READ_TIMEOUT_MS)` so the host can
-/// parse the typed response. Surplus IN reports are then drained non-blocking
-/// (bounded by `IN_DRAIN_MAX`) so a persistent handle does not stall on
-/// accumulated replies. `read_timeout` returns `Ok(0)` on timeout/no-data (NOT
-/// an error) and `Ok(n > 0)` on a real read; only `n > 0` yields a captured reply
-/// (`external_deps.md` §read_timeout semantics).
+/// Reply capture (v0.3.1): after the burst-write succeeds, up to `batch_count`
+/// IN reports are read with a bounded `read_timeout(REPLY_READ_TIMEOUT_MS)` each,
+/// and the LAST non-empty reply is retained. The firmware emits one 32-byte reply
+/// per report processed (PRD §4.4); for a multi-report message only the final
+/// reply — the ETX report — carries the real result (legacy match-bool or a
+/// typed `0x51` reply), so overwriting `reply` each iteration keeps the correct
+/// one. Surplus IN reports (beyond `batch_count`) are then drained non-blocking
+/// (bounded by `IN_DRAIN_MAX`) as a safety net so a persistent handle does not
+/// stall on accumulated replies. `read_timeout` returns `Ok(0)` on timeout/no-data
+/// (NOT an error) and `Ok(n > 0)` on a real read; a timeout/error breaks the
+/// capture loop early (`external_deps.md` §read_timeout semantics).
 ///
 /// Burst-write is safe without a per-report ack: QMK's raw-HID OUT endpoint
 /// buffers up to `RAW_OUT_CAPACITY` (4) reports and drains them all in one
@@ -367,22 +373,28 @@ fn burst_to_one<T: RawHid>(
         }
     }
 
-    // Capture the FIRST device reply with a bounded timeout (v0.3.0). Unlike the
-    // drain below (non-blocking, discards surplus), this read WAITS up to
-    // REPLY_READ_TIMEOUT_MS for the first reply so the host can parse the typed
-    // response. read_timeout returns Ok(0) on timeout/no-data (NOT an error) and
-    // Ok(n>0) when data was read; only n>0 counts as a captured reply.
-    // (external_deps.md §read_timeout semantics.)
+    // Capture the LAST device reply with a bounded timeout (v0.3.1 fix for
+    // Issue 1). The firmware emits one 32-byte reply per report processed (PRD
+    // §4.4); for a multi-report message only the LAST reply — the ETX report —
+    // carries the real result (legacy match-bool, or a typed 0x51 reply). So we
+    // read up to batch_count replies and OVERWRITE `reply` each iteration,
+    // keeping the last non-empty one. Unlike the drain below (non-blocking,
+    // discards surplus), each read here WAITS up to REPLY_READ_TIMEOUT_MS for a
+    // real reply. read_timeout returns Ok(0) on timeout/no-data (NOT an error)
+    // and Ok(n>0) when data was read; a timeout/error breaks the loop early.
+    // (PRD §4.4, §8; external_deps.md §read_timeout semantics.)
     let mut reply: Option<Vec<u8>> = None;
     let mut read_buf = [0u8; REPORT_LENGTH + 1];
-    match interface.read_timeout(&mut read_buf, REPLY_READ_TIMEOUT_MS) {
-        Ok(n) if n > 0 => {
-            reply = Some(read_buf[..n].to_vec());
-            if verbose {
-                println!("Captured device reply: {} bytes", n);
+    for _ in 0..batch_count.max(1) {
+        match interface.read_timeout(&mut read_buf, REPLY_READ_TIMEOUT_MS) {
+            Ok(n) if n > 0 => {
+                reply = Some(read_buf[..n].to_vec()); // overwrite ⇒ keep LAST (ETX) reply
+                if verbose {
+                    println!("Captured device reply: {} bytes", n);
+                }
             }
+            _ => break, // Ok(0) = timeout, Err = read failure ⇒ stop (no more replies)
         }
-        _ => {} // Ok(0) = timeout, Err = read failure ⇒ reply stays None
     }
 
     // Drain any pending IN-side reports (non-blocking). The firmware sends a
