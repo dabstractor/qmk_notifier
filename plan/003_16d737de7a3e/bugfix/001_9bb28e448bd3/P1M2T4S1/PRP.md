@@ -265,6 +265,14 @@ README.md                  # MODIFIED: 4 edits —
      (`test_fidelity_nfa128`) and pipes. Match the existing row style exactly:
      `| \`test_<name>\` | <count> | <description> |`. Count column = 6. -->
 
+<!-- CRITICAL (HAZARD): the working tree may ALREADY contain the fix (concurrent
+     work observed). The `edit` oldText anchors below describe the PRE-FIX (HEAD)
+     state (9 / 2023 / no fidelity row). If `grep` shows those stale tokens are
+     ALREADY gone, the edits are applied — run STEP 0 and jump to the Validation
+     Loop; do NOT attempt the edits (they will fail with oldText-not-found). The
+     canonical input for this PRP is HEAD (pre-fix); the already-applied branch is
+     handled by STEP 0 so one-pass success holds in both cases. -->
+
 <!-- GOTCHA: do NOT touch the host-count line (79), the SET_OS resolution
      sentences, or the watchdog-regression mention. Those are P1.M2.T1.S1's
      correct work. This task is the pattern-corpus count sync ONLY. -->
@@ -286,11 +294,31 @@ None. This task edits README markdown text.
 
 ### Implementation Tasks (ordered by dependencies)
 
+**STEP 0 — ALREADY-APPLIED PRE-FLIGHT (run FIRST).** Before any edit, check
+whether the working tree already contains the fix (observed hazard: concurrent
+work may land these exact edits before this task runs). Run:
+```bash
+grep -nE '9 (suites|host-side|pattern-matcher)' README.md   # stale spots?
+grep -n '2023' README.md                                    # stale aggregate?
+grep -n 'test_fidelity_nfa128' README.md                   # new row present?
+```
+- **If the FIRST TWO return hits AND the third returns nothing** → the working
+  tree is in the pre-fix state. Proceed to Tasks 1-4 below (normal path).
+- **If the FIRST TWO return NOTHING AND the third returns a hit** → the fix is
+  ALREADY APPLIED in the working tree. Do NOT re-edit (the `edit` oldText anchors
+  below describe the pre-fix state and will not match). Instead: jump straight to
+  the Validation Loop (Levels 1-4) to CONFIRM the applied values are correct
+  (`10 suites`, `2029/2029`, the fidelity row, host `79` intact) and that
+  `git diff HEAD -- README.md` shows EXACTLY the 4 expected changes. If
+  validation passes, the task is COMPLETE — stop. If validation finds a wrong
+  value, fix ONLY that wrong value (do not revert/re-apply the others).
+
 Four independent edits in `README.md`. Apply with the `edit` tool, matching the
-EXACT oldText (verified current text via `sed -n` + `grep`). Re-run
-`grep -n '9 host-side\|9 pattern-matcher\|9 suites\|2023' README.md` first to
-confirm the four stale spots still exist at the expected text (they will unless
-another task touched README.md — P1.M2.T3.S1 does NOT).
+EXACT oldText (verified current text via `sed -n` + `grep`, against the pre-fix
+HEAD revision). Re-run
+`grep -nE '9 (suites|host-side|pattern-matcher)' README.md` first to confirm the
+four stale spots still exist at the expected text (normal path; if they don't,
+see STEP 0).
 
 ```yaml
 Task 1: FIX the "Comprehensive Test Suite" intro count (README.md, ~line 479)
@@ -543,6 +571,9 @@ git status --porcelain | grep -E '^ M' | grep -vE ' M (README.md|notifier.c)$' \
 
 ### Technical Validation
 
+- [ ] STEP 0 (already-applied pre-flight) run: the implementer determined
+      whether the working tree was pre-fix (apply Tasks 1-4) or already-applied
+      (jump to validation). This branch is RESOLVED, not skipped.
 - [ ] Level 1: `grep -nE '9 (suites|host-side|pattern-matcher)' README.md` →
       empty; `grep -n '2023' README.md` → empty; `grep -n '2029' README.md` →
       the aggregate line; `grep -n 'test_fidelity_nfa128' README.md` → the new
