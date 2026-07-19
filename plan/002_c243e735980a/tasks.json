@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Multi-OS Map Selection (opt-in overlay)",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Add per-OS command/layer maps selected by the detected host OS, with the default map as a per-track fallback. This is a strict opt-in overlay layered on the green plan-001 codebase: a default-only keymap (zero DEFINE_*_OS macros) MUST be byte-for-byte equivalent to the pre-multi-OS firmware. The OS signal is pushed into the module by the keymap via notifier_set_os(os_variant_t); the module never calls detected_host_os() itself (no link dependency on the OS-detection subsystem). Covers PRD §2 F8/F9, §5.5, §8.6-§8.7, §10.3, §13 invariants 15-21. The pattern matcher, rules.mk, wire protocol, and 9-suite corpus are UNTOUCHED.",
       "milestones": [
         {
@@ -132,7 +132,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Host Test Harness, Acceptance & Docs",
-          "status": "Planned",
+          "status": "Researching",
           "description": "The dedicated multi-OS host test suite (test_notifier_os.c), the extended stub-test runner that builds+runs both notifier binaries, the full acceptance gate verification (§11.2A/B/C/D all green), and the changeset-level README documentation sync (Mode B). After this milestone, the delta is complete and verified.",
           "tasks": [
             {
@@ -174,14 +174,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Extend run_notifier_stub_tests.sh + full acceptance gate verification",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Extend the existing stub-test runner to build+run the new test_notifier_os binary alongside test_notifier_dispatch, and run the complete acceptance gate (§11.2A/B/C/D) to confirm zero regressions across all suites.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Extend runner to build+run test_notifier_os and verify full §11.2A-D gate",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -202,14 +202,14 @@
               "type": "Task",
               "id": "P1.M2.T3",
               "title": "Sync changeset-level documentation (README.md multi-OS section)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Mode B (final cross-cutting doc sync): add a multi-OS section to README.md documenting the opt-in nature, the DEFINE_SERIAL_*_OS macros, the notifier_set_os / process_detected_host_os_kb wiring, OS_DETECTION_ENABLE, the per-track OS-first/default-fallback rule, and the backward-compatibility guarantee. Update the test/acceptance blurb to mention the notifier stub suites. This is the final task — it summarizes the whole changeset and depends on every implementing subtask.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T3.S1",
                   "title": "Update README.md with the multi-OS feature section + backward-compat guarantee",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
