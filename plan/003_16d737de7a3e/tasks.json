@@ -230,7 +230,7 @@
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Stub response capture + test_notifier_host.c",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Extend the stub harness to capture the full 32-byte response for typed-response assertions, then write the dedicated host test suite covering all typed-command and host-rules categories.",
               "subtasks": [
                 {
@@ -287,7 +287,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S4",
                   "title": "Add coexistence/backward-compat + multi-report typed framing test cases to test_notifier_host.c",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T1.S3"
@@ -306,14 +306,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Extend runner + verify full §11.2 acceptance gate",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Extend run_notifier_stub_tests.sh to build+run the third notifier binary (test_notifier_host), and verify the full §11.2A-D acceptance gate is green with no regressions.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Extend run_notifier_stub_tests.sh for test_notifier_host; verify §11.2A-D gate green + no regressions",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T1.S4"

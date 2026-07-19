@@ -307,6 +307,99 @@ int main(void) {
         CK(stub_get_active_layer() == 255,                  "(viii) AHC{layer=0xFF}: host layer cleared (LAYER_UNSET) [§14]");
     }
 
+    /* ================================================================ */
+    /* ===== P1.M3.T1.S4 — COEXISTENCE / backward-compat (coexist-i/ii) = */
+    /* ================================================================ */
+    /* §4.6: "0xF0 can never begin a real matched string (sanitizer allows
+     * only 0x20–0x7E), so a host that sends only legacy strings coexists
+     * unchanged." §13 invariant 1: magic header is exactly 0x81 0x9F; the
+     * coexistence guard checks data[0]==0x81 && data[1]==0x9F. */
+
+    /* ===== (coexist-i) Legacy string coexists with typed path — §4.6 / §13 inv.1-2 / F5 =====
+     * A legacy string (printable data[2], !=0xF0) is NOT routed to the typed
+     * path: its ack is the match-bool 0/1, NOT 0x51. Proven both with a no-match
+     * ("firefox"->0) and a match ("neovide"->1 + board side effects) so the
+     * FULL legacy dispatch path is shown intact ALONGSIDE the typed path. */
+    {
+        /* (coexist-i)(a) "firefox" (no-match legacy string) */
+        uint8_t rep[32]; memset(rep, 0, sizeof(rep));
+        rep[0] = 0x81; rep[1] = 0x9F;                         /* §13 inv.1 magic header */
+        rep[2] = 'f'; rep[3] = 'i'; rep[4] = 'r'; rep[5] = 'e'; /* data[2]='f'=0x66 (!=0xF0) */
+        rep[6] = 'f'; rep[7] = 'o'; rep[8] = 'x'; rep[9] = ETX_TERMINATOR[0];
+        hid_notify(rep, 32);
+        const uint8_t *r = stub_get_last_response();
+        CK(r[0] != NOTIFY_RESPONSE_MARKER, "(coexist-i)(a) legacy 'firefox' NOT routed to typed (r[0]!=0x51) [§4.6/F5]");
+        CK(r[0] == 0,                      "(coexist-i)(a) legacy 'firefox' no-match ack=0 (process_full_message ran) [§13]");
+
+        /* (coexist-i)(b) "neovide" (match legacy string — full side-effect proof) */
+        board_cmd_en = board_cmd_dis = 0;
+        memset(rep, 0, sizeof(rep));
+        rep[0] = 0x81; rep[1] = 0x9F;
+        rep[2] = 'n'; rep[3] = 'e'; rep[4] = 'o'; rep[5] = 'v'; rep[6] = 'i'; rep[7] = 'd'; rep[8] = 'e';
+        rep[9] = ETX_TERMINATOR[0];
+        hid_notify(rep, 32);
+        const uint8_t *r2 = stub_get_last_response();
+        CK(r2[0] != NOTIFY_RESPONSE_MARKER, "(coexist-i)(b) legacy 'neovide' NOT routed to typed (r[0]!=0x51) [§4.6/F5]");
+        CK(r2[0] == 1,                      "(coexist-i)(b) legacy 'neovide' match ack=1 [§13]");
+        CK(board_cmd_en == 1,               "(coexist-i)(b) legacy dispatch fired board on_enable (process_full_message intact) [§13]");
+        CK(stub_get_active_layer() == 5,    "(coexist-i)(b) legacy dispatch activated board layer 5 [§13]");
+    }
+
+    /* ===== (coexist-ii) Non-magic report silently discarded — §13 invariant 1 =====
+     * A non-magic report (data[0]!=0x81) is silently discarded: no raw_hid_send,
+     * so stub_get_last_response() is UNCHANGED. First send a typed QUERY_INFO to
+     * set a known response, capture it, then send the non-magic report and assert
+     * the buffer is UNCHANGED (last-write-wins guard). */
+    {
+        const uint8_t *r0 = send_typed(NOTIFY_CMD_QUERY_INFO, NULL, 0);  /* known response */
+        CK(r0[0] == NOTIFY_RESPONSE_MARKER, "(coexist-ii) setup: QUERY_INFO set a known typed response [§4.6]");
+        uint8_t marker0 = r0[0], echo0 = r0[1];
+        uint8_t bad[32]; memset(bad, 0x55, sizeof(bad));    /* data[0]=0x55 != 0x81 */
+        hid_notify(bad, 32);                                 /* discarded BEFORE raw_hid_send */
+        const uint8_t *r1 = stub_get_last_response();
+        CK(r1[0] == marker0 && r1[1] == echo0,
+                                       "(coexist-ii) non-magic report discarded: response UNCHANGED (no raw_hid_send) [§13 inv.1]");
+    }
+
+    /* ================================================================ */
+    /* ===== P1.M3.T1.S4 — MULTI-REPORT typed framing (multi-rep) ====== */
+    /* ================================================================ */
+    /* §4.6: "Typed commands are ETX-framed and may span multiple 32-byte
+     * reports." A typed APPLY_HOST_CONTEXT (0x05) split across two reports
+     * reassembles + dispatches. WHY AHC not SET_OS: the reassembly byte loop
+     * treats ANY 0x03 byte as ETX; SET_OS's cmd_id 0x03 == ETX (S3's blocker).
+     * AHC's cmd_id 0x05 != ETX, and args layer=224, flags=0, count=28, ids=0
+     * contain NO 0x03 byte, so the message spans reports and reassembles. */
+
+    /* ===== (multi-rep) Two-report APPLY_HOST_CONTEXT reassembly — §4.6 =====
+     * count=28 ids spans two reports (report1 holds 25 ids, report2 holds 3).
+     * r[1]==0x05 is the load-bearing reassembly proof (report1's cmd_id
+     * persisted into the reassembled buffer). */
+    {
+        cb_mute_en = cb_mute_dis = 0;
+        /* Report 1 (32 B, NO ETX): [0x81][0x9F][0xF0][0x05][224][0][28][id0..id24] */
+        uint8_t rep1[32]; memset(rep1, 0, sizeof(rep1));
+        rep1[0] = 0x81; rep1[1] = 0x9F; rep1[2] = NOTIFY_CMD_DISCRIMINATOR;
+        rep1[3] = NOTIFY_CMD_APPLY_HOST_CONTEXT;   /* 0x05 (chosen: != ETX 0x03) */
+        rep1[4] = 224;                              /* layer (HOST_LAYER_BASE; 0xE0, !=0x03) */
+        rep1[5] = 0x00;                             /* flags (clear_board=0) */
+        rep1[6] = 28;                               /* count (0x1C, !=0x03) -> forces 2 reports */
+        /* rep1[7..31] already 0 == id0..id24 (25 ids, all 0, none == 0x03) */
+        hid_notify(rep1, 32);
+        /* Report 2 (with ETX): [0x81][0x9F][id25][id26][id27][0x03] */
+        uint8_t rep2[32]; memset(rep2, 0, sizeof(rep2));
+        rep2[0] = 0x81; rep2[1] = 0x9F;
+        /* rep2[2..4] already 0 == id25,id26,id27 */
+        rep2[5] = ETX_TERMINATOR[0];               /* 0x03 terminates + dispatches */
+        hid_notify(rep2, 32);
+        const uint8_t *r = stub_get_last_response();
+        CK(r[0] == NOTIFY_RESPONSE_MARKER,              "(multi-rep) two-report AHC r[0]=0x51 marker [§4.6]");
+        CK(r[1] == NOTIFY_CMD_APPLY_HOST_CONTEXT,        "(multi-rep) two-report AHC r[1]=0x05 cmd echo (reassembly OK) [§4.6]");
+        CK(r[2] == 1,                                    "(multi-rep) two-report AHC r[2]=ack=1 [§4.6]");
+        CK(stub_get_active_layer() == 224,               "(multi-rep) two-report AHC host layer 224 active (set_host_layer ran) [§4.6]");
+        CK(cb_mute_en == 1,                              "(multi-rep) two-report AHC callback diff ran (id 0 enabled once) [§4.6]");
+    }
+
     printf("\nTotal tests run: %d / passed: %d / failed: %d\n", g_pass + g_fail, g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
