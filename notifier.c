@@ -645,9 +645,9 @@ static void send_typed_response(uint8_t cmd_id, const uint8_t *payload, uint8_t 
  * so the legacy 0/1 ack is suppressed. Bypasses process_full_message => no board
  * disable/deactivate side effects (§4.6, invariant 21).
  *
- * QUERY_INFO (0x01) and QUERY_CALLBACK (0x02) are implemented here. SET_OS (0x03)
- * and APPLY_HOST_CONTEXT (0x05) land in P1.M2.T2.S2/S3; until then they fall through
- * to the default ([0x51][cmd_id] no payload) — a safe placeholder. */
+ * QUERY_INFO (0x01), QUERY_CALLBACK (0x02), SET_OS (0x03), and APPLY_HOST_CONTEXT
+ * (0x05) are implemented here. The reserved 0x04 (VIA-coexist) and any unknown
+ * id fall through to the default ([0x51][cmd_id] no payload) — a safe placeholder. */
 static bool handle_typed_command(char *data) {
     uint8_t cmd_id = (uint8_t)data[1];
 
@@ -697,9 +697,45 @@ static bool handle_typed_command(char *data) {
             send_typed_response(NOTIFY_CMD_SET_OS, payload, 1);
             break;
         }
-        /* Default / unknown cmd_id (incl 0x04 reserved for VIA-coexist, and 0x05
-         * until P1.M2.T2.S3 lands): reply with just [0x51][cmd_id] (no payload) so
-         * the host always gets a typed response and never crashes on an unknown command. */
+        /* APPLY_HOST_CONTEXT (0x05) — per-window stack/replace via the clear_board
+         * flag (§14). clear_board=1 (flags bit 0): deactivate the board layer +
+         * disable the board command BEFORE applying (replace mode — board rules
+         * are inert for this window). clear_board=0 (stack): board state is left
+         * untouched. Then set_host_layer(layer) — 0xFF (LAYER_UNSET) clears the
+         * host layer — and apply_host_callbacks(ids, count) diffs the host
+         * callback enable set (disable-before-enable; count==0 disables all).
+         * The board and host state planes are otherwise independent (§14,
+         * invariant 21). Response: [0x51][0x05][ack=1]. */
+        case NOTIFY_CMD_APPLY_HOST_CONTEXT: {
+            uint8_t layer = (uint8_t)data[2];
+            uint8_t flags = (uint8_t)data[3];
+            uint8_t count = (uint8_t)data[4];
+            /* ids[] is the variable-length tail starting at data[5]. Clamp count to
+             * the buffer bound so a malformed/garbled count (e.g. 0xFF) never reads
+             * past msg_buffer (MSG_BUFFER_SIZE). The reassembled tail may carry
+             * stale bytes from a prior message (the typed path does not
+             * NUL-terminate), but apply_host_callbacks skips any id >=
+             * get_host_callbacks_size() (RISK-3), so garbage ids are inert. */
+            uint8_t max_ids = (uint8_t)(MSG_BUFFER_SIZE - 5);
+            if (count > max_ids) {
+                count = max_ids;
+            }
+            uint8_t *ids = (uint8_t *)&data[5];
+
+            if (flags & 0x01) {                 /* bit 0 = clear_board (§4.6): replace */
+                deactivate_layer();             /* board: turn off activated_layer   */
+                disable_command();              /* board: turn off current_command    */
+            }
+            set_host_layer(layer);              /* host: 0xFF (LAYER_UNSET) clears host_layer */
+            apply_host_callbacks(ids, count);   /* host: disable-before-enable diff            */
+
+            uint8_t payload[1] = { 0x01 };      /* ack = 1 (applied) */
+            send_typed_response(NOTIFY_CMD_APPLY_HOST_CONTEXT, payload, 1);
+            break;
+        }
+        /* Default / unknown cmd_id (incl 0x04 reserved for VIA-coexist): reply with
+         * just [0x51][cmd_id] (no payload) so the host always gets a typed response
+         * and never crashes on an unknown command. */
         default: {
             send_typed_response(cmd_id, NULL, 0);
             break;

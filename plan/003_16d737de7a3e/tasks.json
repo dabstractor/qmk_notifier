@@ -94,7 +94,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Typed Dispatch + Host State Machines",
-          "status": "Researching",
+          "status": "Complete",
           "description": "The core implementation: route 0xF0 commands in hid_notify, the host state machines (set_host_layer, apply_host_callbacks), and the four typed-command handlers + response builder.",
           "tasks": [
             {
@@ -158,7 +158,7 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "handle_typed_command + four handlers + typed response builder",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Implement the typed-command dispatch function and the QUERY_INFO, QUERY_CALLBACK, SET_OS, and APPLY_HOST_CONTEXT handlers, plus the [0x51] typed response builder.",
               "subtasks": [
                 {
@@ -201,7 +201,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S3",
                   "title": "Implement APPLY_HOST_CONTEXT handler (clear_board + set_host_layer + apply_host_callbacks)",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T2.S1",
@@ -237,7 +237,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Extend qmk_stubs.c to capture full 32-byte response; add stub_get_last_response() accessor",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T2.S3"
