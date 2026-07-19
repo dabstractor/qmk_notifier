@@ -237,7 +237,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Extend qmk_stubs.c to capture full 32-byte response; add stub_get_last_response() accessor",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T2.S3"
@@ -253,7 +253,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S2",
                   "title": "Write test_notifier_host.c: QUERY_INFO + QUERY_CALLBACK test cases",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M3.T1.S1"
