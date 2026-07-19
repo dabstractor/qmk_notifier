@@ -75,6 +75,46 @@ pub enum HostOs {
     Ios = 4,
 }
 
+/// Parsed device reply (see PRD §8 and §10.2; canonical byte layouts in
+/// `firmware_wire_contract.md` §Field Definitions and §Reply Disambiguation).
+///
+/// Produced by `parse_reply` (P1.M2.T2) from a single 32-byte IN report read
+/// after a command burst. `response[0]` disambiguates the reply: `0x51` ⇒ typed
+/// reply (decoded by the `response[1]` cmd echo); `0`/`1` ⇒ legacy match-bool;
+/// no reply within the bounded `read_timeout` ⇒ `Timeout`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandResponse {
+    /// Legacy string reply: `response[0]` is `0` (no match) or `1` (matched).
+    /// Returned for `SendMessage`, and for a typed command answered by a
+    /// non-capable (legacy) device that walks the typed bytes as a no-match
+    /// string. See PRD §8, §10.2.
+    Legacy { matched: bool },
+    /// `QUERY_INFO` (cmd `0x01`) typed reply:
+    /// `[0x51][0x01][proto_ver][feature_flags][callback_count][board_rules_present]`.
+    /// See `firmware_wire_contract.md` §QUERY_INFO response.
+    Info {
+        proto_ver: u8,
+        feature_flags: u8,
+        callback_count: u8,
+        board_rules_present: bool,
+    },
+    /// `QUERY_CALLBACK` (cmd `0x02`) typed reply:
+    /// `[0x51][0x02][index][name bytes, NUL-padded]`. `name` is `None` when the
+    /// callback has no name or the index is out of range (the firmware emits an
+    /// immediate `0x00` NUL at the name position). See `firmware_wire_contract.md`
+    /// §QUERY_CALLBACK response.
+    CallbackName { index: u8, name: Option<String> },
+    /// `SET_OS` (cmd `0x03`) / `APPLY_HOST_CONTEXT` (cmd `0x05`) typed reply:
+    /// `[0x51][cmd_echo][ack]`. `ok` is `true` when `ack == 1` (applied). Shared
+    /// by both ack-style commands. See `firmware_wire_contract.md` §SET_OS /
+    /// §APPLY_HOST_CONTEXT response.
+    Ack { ok: bool },
+    /// No reply arrived within the bounded `read_timeout` — the device is legacy
+    /// or offline. The caller treats this as a non-capable device and stays in
+    /// string-only mode. See PRD §10.2, §8.
+    Timeout,
+}
+
 /// Parameters required for running QMK notifier operations
 #[derive(Debug, Clone)]
 pub struct RunParameters {
@@ -515,5 +555,97 @@ mod tests {
         let result = run(params);
         // Should handle verbose output without panicking
         assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_command_response_info_construction() {
+        // QUERY_INFO reply: proto_ver=2 (typed-capable), feature_flags=0x03
+        // (APPLY_HOST_CONTEXT | callback registry), 5 callbacks, board map present.
+        let info = CommandResponse::Info {
+            proto_ver: 2,
+            feature_flags: 0x03,
+            callback_count: 5,
+            board_rules_present: true,
+        };
+        match info {
+            CommandResponse::Info {
+                proto_ver,
+                feature_flags,
+                callback_count,
+                board_rules_present,
+            } => {
+                assert_eq!(proto_ver, 2);
+                assert_eq!(feature_flags, 0x03);
+                assert_eq!(callback_count, 5);
+                assert!(board_rules_present);
+            }
+            _ => panic!("expected Info"),
+        }
+        // PartialEq/Eq derive (mandated by the item) must hold for the result type.
+        assert_eq!(
+            info,
+            CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x03,
+                callback_count: 5,
+                board_rules_present: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_command_response_callback_name_construction() {
+        // Named callback: index echoed back, ASCII name present.
+        let named = CommandResponse::CallbackName {
+            index: 3,
+            name: Some("layer_tap".to_string()),
+        };
+        // Bind by reference so `named` stays intact for the PartialEq/Eq
+        // assertions below (CommandResponse owns an Option<String> and is
+        // intentionally non-Copy — see PRP gotchas).
+        match named {
+            CommandResponse::CallbackName { index, ref name } => {
+                assert_eq!(index, 3);
+                assert_eq!(name.as_deref(), Some("layer_tap"));
+            }
+            _ => panic!("expected CallbackName"),
+        }
+
+        // Unnamed / out-of-range callback: firmware emits an immediate NUL ⇒ None.
+        let unnamed = CommandResponse::CallbackName {
+            index: 99,
+            name: None,
+        };
+        assert_eq!(
+            unnamed,
+            CommandResponse::CallbackName {
+                index: 99,
+                name: None
+            }
+        );
+        assert_ne!(named, unnamed, "distinct index/name must not compare equal");
+    }
+
+    #[test]
+    fn test_command_response_legacy_ack_timeout_construction() {
+        // Legacy match-bool reply (response[0] ∈ {0,1}).
+        let matched = CommandResponse::Legacy { matched: true };
+        let no_match = CommandResponse::Legacy { matched: false };
+        assert_eq!(matched, CommandResponse::Legacy { matched: true });
+        assert_ne!(matched, no_match);
+
+        // SET_OS / APPLY_HOST_CONTEXT ack reply (ack==1 ⇒ applied).
+        let ok = CommandResponse::Ack { ok: true };
+        let fail = CommandResponse::Ack { ok: false };
+        assert_eq!(ok, CommandResponse::Ack { ok: true });
+        assert_ne!(ok, fail);
+
+        // No reply within read_timeout (device legacy/offline).
+        let t = CommandResponse::Timeout;
+        assert_eq!(t, CommandResponse::Timeout);
+
+        // Cross-variant inequality: different variants must never compare equal
+        // (sanity-check the derived PartialEq across the whole enum).
+        assert_ne!(CommandResponse::Timeout, CommandResponse::Ack { ok: false });
     }
 }
