@@ -476,13 +476,13 @@ gcc test_pattern_match.c pattern_match.c -o test_pattern_match
 
 ### Comprehensive Test Suite
 
-To build and run all 9 host-side suites plus a performance micro-benchmark:
+To build and run all 10 host-side suites plus a performance micro-benchmark:
 
 ```bash
 ./run_all_tests.sh
 ```
 
-This builds and runs the 9 pattern-matcher suites (all linking `pattern_match.c`) and prints an aggregate summary. The live per-suite breakdown:
+This builds and runs the 10 pattern-matcher suites (all linking `pattern_match.c`) and prints an aggregate summary. The live per-suite breakdown:
 
 | Suite | Count | Covers |
 |---|---|---|
@@ -495,6 +495,7 @@ This builds and runs the 9 pattern-matcher suites (all linking `pattern_match.c`
 | `test_error_handling` | 161 | NULL/garbage inputs, malformed escapes |
 | `test_memory_stress` | 32 | long strings, repeated alloc/free (no leaks/crashes) |
 | `test_invalid_patterns` | 1008 | 46 pathological patterns × many inputs |
+| `test_fidelity_nfa128` | 6 | NFA-budget fidelity gate: matcher exercised at the firmware `NFA_MAX_PATTERN=128` budget (128-byte boundary fit + over-budget safe-clamp); `#error`-guarded so the gate cannot silently drift back to 2048 |
 
 A second, separate gate validates the **receiver/dispatcher** side of the module:
 
@@ -534,7 +535,7 @@ The pattern matching library implements a full regex construct set:
 - `*`, `^`, `$` - Wildcard, start anchor, end anchor
 
 **Overall Test Results**:
-- Pattern-match corpus (`./run_all_tests.sh`, 9 suites): **2023/2023** tests passing.
+- Pattern-match corpus (`./run_all_tests.sh`, 10 suites): **2029/2029** tests passing.
 - Notifier stub gate (`./run_notifier_stub_tests.sh`): `test_notifier_dispatch`
   **14/14** + `test_notifier_os` **31/31** cases passing.
 - `test_notifier_host` (79 cases): all categories pass — including the four `SET_OS`

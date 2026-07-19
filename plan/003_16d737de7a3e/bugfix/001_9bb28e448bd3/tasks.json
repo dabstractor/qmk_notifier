@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "QA-Discovered Defect Remediation",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Remediate the one Major robustness defect (typed reassembly desync) and three Minor issues (stale README, NFA_MAX_PATTERN test-fidelity gap, dead has_been_queried state) discovered by end-to-end creative QA against the qmk-notifier PRD. The implementation is high quality — all shipped suites pass — but adversarial probing beyond the shipped corpus uncovered these gaps. This phase restores robustness to malformed/abandoned typed commands, corrects documentation drift, closes a test-fidelity gap, and resolves a dead-state code smell.",
       "milestones": [
         {
@@ -74,7 +74,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Minor Defects & Test Fidelity Remediation",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Remediate the three Minor issues: (1) update stale README test results that falsely report SET_OS tests as broken, (2) add a firmware-budget NFA_MAX_PATTERN=128 fidelity test to close the test-fidelity gap, and (3) document the has_been_queried dead state. Concludes with a changeset-level documentation sync task.",
           "tasks": [
             {
@@ -151,14 +151,14 @@
               "type": "Task",
               "id": "P1.M2.T4",
               "title": "Sync changeset-level documentation",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Final changeset-level documentation sweep. Update README.md overview/features sections and any cross-cutting documentation to reflect the complete delta: the typed reassembly watchdog fix, corrected test results, the new NFA-128 fidelity suite, and the has_been_queried documentation. This prevents a coherent set of fixes from shipping with a stale README.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T4.S1",
                   "title": "Update README.md overview and features to reflect all changeset improvements",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
