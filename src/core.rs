@@ -1041,4 +1041,104 @@ mod tests {
         let response = [0x51, 0x05, 0];
         assert_eq!(parse_reply(&response), CommandResponse::Ack { ok: false });
     }
+
+    #[test]
+    fn parse_reply_empty_slice_is_timeout() {
+        // Empty input ⇒ Timeout. A zero-byte IN report means no reply arrived
+        // within the bounded read_timeout (the caller passes &[] when
+        // read_timeout returned Ok(0)). firmware_wire_contract.md §Reply
+        // Disambiguation: "no reply within timeout ⇒ Timeout"; the caller treats
+        // Timeout as a legacy/non-capable device and stays in string-only mode
+        // (PRD §8, §10.2). Item edge case #1.
+        assert_eq!(parse_reply(&[]), CommandResponse::Timeout);
+    }
+
+    #[test]
+    fn parse_reply_legacy_zero_is_no_match() {
+        // Legacy string-mode reply: response[0] == 0 is the match-bool "no
+        // match" (the firmware wrote the bool, NOT a typed 0x51 marker). Item
+        // edge case #2. firmware_wire_contract.md §Reply Disambiguation.
+        assert_eq!(
+            parse_reply(&[0]),
+            CommandResponse::Legacy { matched: false }
+        );
+    }
+
+    #[test]
+    fn parse_reply_legacy_one_is_matched() {
+        // Legacy string-mode reply: response[0] == 1 is the match-bool "matched".
+        // Item edge case #3.
+        assert_eq!(parse_reply(&[1]), CommandResponse::Legacy { matched: true });
+    }
+
+    #[test]
+    fn parse_reply_typed_marker_only_is_timeout() {
+        // Degenerate "too short" typed reply: [0x51] alone (len 1 < 3).
+        // parse_typed_reply reads cmd_echo via response.get(1).copied().unwrap_or(0)
+        // ⇒ None ⇒ 0 (the slice has no index 1). 0 is not a known cmd id, so the
+        // unknown-cmd-echo arm yields Timeout. CRITICAL: this MUST NOT panic — a
+        // bare response[1] index would panic on a len-1 slice. The defensive
+        // .get() is the guard this test certifies. Item edge case #4.
+        assert_eq!(parse_reply(&[0x51]), CommandResponse::Timeout);
+    }
+
+    #[test]
+    fn parse_reply_unknown_cmd_echo_is_timeout() {
+        // Typed marker present, but response[1] == 0xFF is not a known command
+        // echo (valid ids are 0x01/0x02/0x03/0x05; 0x04 is VIA-reserved and also
+        // unknown to this crate). Treated as a non-capable / future-firmware
+        // reply ⇒ Timeout. Exercises the `_ => Timeout` arm in parse_typed_reply.
+        // Item edge case #5.
+        assert_eq!(parse_reply(&[0x51, 0xFF]), CommandResponse::Timeout);
+    }
+
+    #[test]
+    fn parse_reply_unknown_marker_is_timeout() {
+        // response[0] == 0x42 is neither 0x51 (typed), 0 (legacy no-match), nor
+        // 1 (legacy match). Per firmware_wire_contract.md §Reply Disambiguation,
+        // any other marker byte ⇒ treat as a non-capable device ⇒ Timeout.
+        // Exercises the `_ => Timeout` arm in the top-level parse_reply match.
+        // Item edge case #6.
+        assert_eq!(parse_reply(&[0x42]), CommandResponse::Timeout);
+    }
+
+    #[test]
+    fn parse_reply_callback_name_non_utf8_is_none() {
+        // QUERY_CALLBACK reply whose name bytes are NOT valid UTF-8. 0xFF and
+        // 0xFE are never legal UTF-8 bytes (UTF-8 uses 0x00–0xF4), so
+        // String::from_utf8 fails ⇒ .ok() ⇒ None. parse_callback_name
+        // deliberately uses .ok() (NOT from_utf8_lossy) so a corrupt name is
+        // treated as ABSENT (None) rather than replaced with U+FFFD.
+        // Layout: [0x51][0x02][index=1][0xFF][0xFE][0x00 NUL terminator].
+        // Item edge case #7.
+        let response = [0x51, 0x02, 1, 0xFF, 0xFE, 0x00];
+        assert_eq!(
+            parse_reply(&response),
+            CommandResponse::CallbackName {
+                index: 1,
+                name: None
+            }
+        );
+    }
+
+    #[test]
+    fn parse_reply_truncated_info_defaults_board_rules_false() {
+        // Truncated QUERY_INFO reply: only 4 bytes, so board_rules_present
+        // (offset [5]) AND callback_count (offset [4]) are absent. Both must
+        // default via .get(i).copied().unwrap_or(0): callback_count ⇒ 0,
+        // board_rules_present ⇒ 0 ⇒ false (the != 0 coercion). The PRESENT
+        // fields (proto_ver=2, feature_flags=0x03) must still decode normally.
+        // CRITICAL: this MUST NOT panic on a bare response[5] index — the
+        // defensive .get() is the guard this test certifies. Item edge case #8.
+        let response = [0x51, 0x01, 2, 0x03];
+        assert_eq!(
+            parse_reply(&response),
+            CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x03,
+                callback_count: 0,
+                board_rules_present: false,
+            }
+        );
+    }
 }

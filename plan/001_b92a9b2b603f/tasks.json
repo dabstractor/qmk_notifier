@@ -162,7 +162,7 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Implement parse_reply reply parser",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Pure function in core.rs that decodes a raw 32-byte device reply buffer into a CommandResponse. Handles typed replies (0x51 marker), legacy match-bool (0/1), and no-reply/timeout.",
               "subtasks": [
                 {
@@ -186,7 +186,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S2",
                   "title": "Add legacy/timeout/edge-case handling to parse_reply and finalize tests",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M2.T2.S1"
@@ -213,14 +213,14 @@
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Evolve burst_to_one to capture first reply",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Change burst_to_one from returning bool to returning (bool, Option<Vec<u8>>), where the Option carries the first 32-byte IN-side reply captured with a bounded read_timeout. The existing non-blocking drain of surplus reports is preserved.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Change burst_to_one return type and add bounded reply capture",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T2.S1"
