@@ -253,7 +253,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S2",
                   "title": "Write test_notifier_host.c: QUERY_INFO + QUERY_CALLBACK test cases",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M3.T1.S1"
@@ -270,7 +270,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S3",
                   "title": "Add SET_OS + APPLY_HOST_CONTEXT (stack/replace) test cases to test_notifier_host.c",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M3.T1.S2"
