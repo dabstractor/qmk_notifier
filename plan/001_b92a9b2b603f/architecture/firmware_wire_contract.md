@@ -117,14 +117,26 @@ APPLY_HOST_CONTEXT response: `[0x51][0x05][ack]` where `ack = 1` means applied.
 
 ## Firmware Implementation Status
 
-**NOT YET IMPLEMENTED.** The firmware `notifier.c` has no `0xF0` branch in
-`hid_notify()`. Only the legacy path exists:
+**Implemented.** The firmware `notifier.c` now implements the §4.6 typed-command
+namespace. `hid_notify()` routes the first report's `data[2] == 0xF0` into a
+length-aware typed-reassembly path; at ETX, `handle_typed_command()` dispatches the
+reassembled command (QUERY_INFO / QUERY_CALLBACK / SET_OS / APPLY_HOST_CONTEXT) and
+emits the `[0x51][cmd_echo][payload]` typed reply. The legacy 0/1 acknowledgement
+now runs under an `if (!typed_dispatched)` guard, so a typed message suppresses the
+legacy ack on its ETX report:
 ```c
-uint8_t response[RAW_REPORT_SIZE] = {0};
-response[0] = match;  // 0 or 1
-raw_hid_send(response, RAW_REPORT_SIZE);  // RAW_REPORT_SIZE = 32
+if (!typed_dispatched) {
+    uint8_t response[RAW_REPORT_SIZE] = {0};
+    response[0] = match;  // 0 or 1  (legacy path only; typed replies are sent inside handle_typed_command)
+    raw_hid_send(response, RAW_REPORT_SIZE);  // RAW_REPORT_SIZE = 32
+}
 ```
 
-This crate's typed-command transport will work against firmware once the firmware
-implements §4.6. Until then, typed commands will time out — which is the designed
-fallback behavior.
+This was confirmed via **live hardware testing** against a real QMK keyboard
+(Dactyl-Manuform, VID 0xFEED / PID 0x0000) running qmk-notifier firmware,
+cross-checked against the `notifier.c::hid_notify` source. The firmware's reply
+model is **per-report**: `hid_notify()` is invoked once per 32-byte report and sends
+a 32-byte reply at the end of every call — so an N-report message produces N replies,
+where only the LAST (ETX-report) reply carries the real result (typed `0x51…` or the
+legacy match-bool), and intermediate reports reply with a legacy `0`. This crate's
+reply capture must retain the ETX-report reply (see the bugfix PRD §Issue 1).

@@ -25,10 +25,17 @@ non-exhaustive. Rust's compiler enforces this — you MUST add arms for every ne
 variant. The clean approach: add `todo!()` stubs when adding variants, then
 replace them with real dispatch logic in the wiring task.
 
-### F4: The firmware does not implement typed commands yet
-This is by design. The transport layer must handle timeouts gracefully. The PRD
-explicitly designs for this (§10.2, §14 invariant #6). The tests for reply parsing
-must use synthetic byte buffers, not live hardware.
+### F4: The firmware now implements typed commands
+The firmware `notifier.c` implements the §4.6 typed-command namespace: `hid_notify()`
+routes `data[2] == 0xF0` (first report) to a typed-reassembly path, and
+`handle_typed_command()` dispatches QUERY_INFO / QUERY_CALLBACK / SET_OS /
+APPLY_HOST_CONTEXT, emitting `[0x51][cmd_echo][payload]` typed replies on the ETX
+report. Confirmed via live hardware testing (Dactyl-Manuform) cross-checked against
+the firmware source. The transport layer must STILL handle timeouts gracefully
+(§10.2, §14 invariant #6) — a non-capable or offline device replies with a legacy
+`0`/`1` or nothing, which parses to `Timeout` semantics. Unit tests for reply
+parsing should continue to use synthetic byte buffers (deterministic, no hardware
+dependency); typed replies are additionally observable on live hardware.
 
 ### F5: qmkonnect's retry string-matching has a latent gap
 `QmkError::DeviceOpenError` Display outputs `"Error opening device: …"`, but

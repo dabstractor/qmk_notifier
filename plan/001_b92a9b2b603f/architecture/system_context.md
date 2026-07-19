@@ -88,10 +88,16 @@ string-matching gap in qmkonnect, not this crate's problem, but worth flagging.
 
 ### Upstream canonical: firmware (qmk-notifier)
 
-The firmware `notifier.c` **does NOT yet implement the typed-command namespace**.
-There is no `0xF0` branch in `hid_notify()`, no `handle_typed_command()`, no
-`host_layer`/`host_cb_enabled` trackers. The typed-command wire contract is fully
-specified in `qmk-notifier/PRD.md` §4.6 but not yet coded in firmware.
+The firmware `notifier.c` **implements the typed-command namespace** (§4.6).
+`hid_notify()` routes the first report's `data[2] == 0xF0` to a typed-reassembly
+path; `handle_typed_command()` dispatches QUERY_INFO / QUERY_CALLBACK / SET_OS /
+APPLY_HOST_CONTEXT and emits `[0x51][cmd_echo][payload]` replies on the ETX report,
+with the `host_layer`/`host_cb_enabled` trackers updated accordingly. Confirmed via
+live hardware testing (Dactyl-Manuform, VID 0xFEED / PID 0x0000) cross-checked
+against the firmware source. The firmware uses a **per-report reply model**: one
+32-byte reply per `hid_notify()` call, where only the ETX-report reply carries the
+real (typed `0x51…` or legacy match-bool) result and intermediate reports reply with
+a legacy `0`.
 
 **Implication for this crate**: The transport must handle the case where the
 device does not reply to typed commands (legacy firmware). `CommandResponse::Timeout`

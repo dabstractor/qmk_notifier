@@ -1,5 +1,5 @@
 [package]
-name = "qmk_notifier"
+name = "qmk-notifier"
 version = "0.3.0"
 edition = "2021"
 description = "Raw-HID transport layer for the QMKonnect ecosystem; sends legacy strings and typed commands to QMK keyboards"
