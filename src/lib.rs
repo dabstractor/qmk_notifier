@@ -865,58 +865,56 @@ mod tests {
     // ---- P1.M4.T1.S1: --query-info / --list-callbacks flag parsing ----
     // Build ArgMatches via the no-exit try_get_matches_from (NEVER get_matches* in a
     // test — it exits the process on error), then exercise the pure parse_matches.
-    fn cli_for(args: &[&str]) -> CliArgs {
+    fn cli_for(args: &[&str]) -> RunParameters {
         let matches = build_cli_command()
             .try_get_matches_from(args)
             .expect("test args should parse");
-        parse_matches(&matches).expect("test args should resolve to CliArgs")
+        parse_matches(&matches).expect("test args should resolve to RunParameters")
     }
 
     #[test]
     fn test_parse_query_info_flag() {
-        let cli = cli_for(&["qmk_notifier", "--query-info"]);
-        assert!(matches!(cli.params.command, RunCommand::QueryInfo));
-        assert!(!cli.list_callbacks);
+        let params = cli_for(&["qmk_notifier", "--query-info"]);
+        assert!(matches!(params.command, RunCommand::QueryInfo));
         // Defaults preserved.
-        assert_eq!(cli.params.usage_page, DEFAULT_USAGE_PAGE);
-        assert_eq!(cli.params.usage, DEFAULT_USAGE);
-        assert_eq!(cli.params.vendor_id, None);
-        assert_eq!(cli.params.product_id, None);
+        assert_eq!(params.usage_page, DEFAULT_USAGE_PAGE);
+        assert_eq!(params.usage, DEFAULT_USAGE);
+        assert_eq!(params.vendor_id, None);
+        assert_eq!(params.product_id, None);
     }
 
     #[test]
     fn test_parse_list_callbacks_flag() {
-        let cli = cli_for(&["qmk_notifier", "--list-callbacks"]);
-        // list-callbacks maps to QueryInfo + the sweep signal.
-        assert!(matches!(cli.params.command, RunCommand::QueryInfo));
-        assert!(cli.list_callbacks);
+        let params = cli_for(&["qmk_notifier", "--list-callbacks"]);
+        // --list-callbacks maps to QueryInfo (the library sees no difference from
+        // --query-info). The callback sweep is now a CLI-only concern detected
+        // out-of-band by main.rs via std::env::args; RunParameters carries no
+        // sweep flag, so there is nothing further to assert here.
+        assert!(matches!(params.command, RunCommand::QueryInfo));
     }
 
     #[test]
     fn test_query_info_combines_with_device_flags() {
         // Device-targeting flags are orthogonal to the action group.
-        let cli = cli_for(&[
+        let params = cli_for(&[
             "qmk_notifier",
             "--query-info",
             "--vendor-id",
             "0xFEED",
             "-v",
         ]);
-        assert!(matches!(cli.params.command, RunCommand::QueryInfo));
-        assert_eq!(cli.params.vendor_id, Some(0xFEED));
-        assert!(cli.params.verbose);
-        assert!(!cli.list_callbacks);
+        assert!(matches!(params.command, RunCommand::QueryInfo));
+        assert_eq!(params.vendor_id, Some(0xFEED));
+        assert!(params.verbose);
     }
 
     #[test]
     fn test_message_and_list_still_parse() {
-        let cli = cli_for(&["qmk_notifier", "hello"]);
-        assert!(matches!(cli.params.command, RunCommand::SendMessage(s) if s == "hello"));
-        assert!(!cli.list_callbacks);
+        let params = cli_for(&["qmk_notifier", "hello"]);
+        assert!(matches!(params.command, RunCommand::SendMessage(s) if s == "hello"));
 
-        let cli = cli_for(&["qmk_notifier", "--list"]);
-        assert!(matches!(cli.params.command, RunCommand::ListDevices));
-        assert!(!cli.list_callbacks);
+        let params = cli_for(&["qmk_notifier", "--list"]);
+        assert!(matches!(params.command, RunCommand::ListDevices));
     }
 
     #[test]
