@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "QA-Discovered Defect Remediation",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Remediate the one Major robustness defect (typed reassembly desync) and three Minor issues (stale README, NFA_MAX_PATTERN test-fidelity gap, dead has_been_queried state) discovered by end-to-end creative QA against the qmk-notifier PRD. The implementation is high quality — all shipped suites pass — but adversarial probing beyond the shipped corpus uncovered these gaps. This phase restores robustness to malformed/abandoned typed commands, corrects documentation drift, closes a test-fidelity gap, and resolves a dead-state code smell.",
       "milestones": [
         {
@@ -74,7 +74,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Minor Defects & Test Fidelity Remediation",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Remediate the three Minor issues: (1) update stale README test results that falsely report SET_OS tests as broken, (2) add a firmware-budget NFA_MAX_PATTERN=128 fidelity test to close the test-fidelity gap, and (3) document the has_been_queried dead state. Concludes with a changeset-level documentation sync task.",
           "tasks": [
             {
@@ -128,14 +128,14 @@
               "type": "Task",
               "id": "P1.M2.T3",
               "title": "Resolve has_been_queried dead state (Issue 4)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Document the has_been_queried variable as intentionally write-only. It is set to true on the first QUERY_INFO (notifier.c:706) per PRD §4.6 requirement, but never read. The PRD only requires the firmware to SET it (the host enforces 'at most once per board boot'). Rather than changing the wire protocol to expose it (risky for host compatibility), document it as reserved for future host observability.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T3.S1",
                   "title": "Document has_been_queried as intentionally write-only in notifier.c",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_16d737de7a3e/bugfix/001_9bb28e448bd3/architecture/findings_and_risks.md. The variable has_been_queried is declared at notifier.c:186 (`static bool has_been_queried = false;`) and set to true at notifier.c:706 (QUERY_INFO handler). It is NEVER read by any code path. The PRD §4.6 requires the firmware to set it; the host enforces 'at most once per board boot'. Exposing it via QUERY_INFO would change the 4-byte response payload to 5 bytes, risking host compatibility — NOT recommended for a Minor issue. The existing comments already mention the §4.6 handshake-timing rule.\n2. INPUT: notifier.c line 186 (declaration) and line 706 (assignment). The existing comments reference §4.6.\n3. LOGIC: Implement per Issue 4 (h3.3). Update the declaration comment at line 186 to clearly state: 'Write-only by design (PRD §4.6): the host enforces at-most-once-per-boot semantics; this flag is reserved for future firmware-side observability/debugging and is intentionally not exposed in the QUERY_INFO response to preserve wire-protocol compatibility.' Update the assignment comment at line 706 similarly if needed. No functional code change — this is documentation-only.\n4. OUTPUT: notifier.c where has_been_queried has a clear, accurate comment explaining its write-only design rationale. No behavior change. All tests still pass.\n5. DOCS: This IS the documentation fix — the comment in notifier.c IS the doc. No separate docs subtask needed.",
@@ -151,14 +151,14 @@
               "type": "Task",
               "id": "P1.M2.T4",
               "title": "Sync changeset-level documentation",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Final changeset-level documentation sweep. Update README.md overview/features sections and any cross-cutting documentation to reflect the complete delta: the typed reassembly watchdog fix, corrected test results, the new NFA-128 fidelity suite, and the has_been_queried documentation. This prevents a coherent set of fixes from shipping with a stale README.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T4.S1",
                   "title": "Update README.md overview and features to reflect all changeset improvements",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",

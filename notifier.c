@@ -191,7 +191,18 @@ os_variant_t current_os = OS_UNSURE;
  * only via clear_board (§14). */
 static uint8_t host_layer = LAYER_UNSET;                       /* independent of board activated_layer (§14) */
 static bool    host_cb_enabled[HOST_CALLBACK_MAX] = {false};   /* zero-init; diff target for apply_host_callbacks (§14) */
-static bool    has_been_queried = false;                       /* set on first QUERY_INFO service (§4.6 handshake-timing rule) */
+/* has_been_queried — WRITE-ONLY BY DESIGN (PRD §4.6 handshake-timing rule).
+ * Set to true on the first QUERY_INFO (0x01) serviced; NEVER read by any
+ * code path. The PRD requires only that the firmware SET it — the HOST
+ * enforces the "at most once per board boot" handshake semantics itself
+ * (§4.6: a mid-session reconnect against legacy firmware must not clear an
+ * active board layer), so a read site here would be dead state. The flag is
+ * reserved for future firmware-side observability/debugging and is
+ * intentionally NOT exposed in the QUERY_INFO reply: that payload is a fixed
+ * 4 bytes ([proto_ver][feature_flags][callback_count][board_rules_present]),
+ * and adding a 5th byte would change the wire-protocol response size and
+ * risk host compatibility. */
+static bool    has_been_queried = false;
 
 /* --- Per-OS weak accessors + selector (multi-OS overlay, §2 F8 / §8.3) --------
  * Each accessor returns {NULL, 0} ("no OS-specific map") UNLESS overridden by a
@@ -711,7 +722,7 @@ static bool handle_typed_command(char *data, uint16_t len) {
          * per board boot to detect a typed-command-capable firmware. Reply payload:
          * [proto_ver][feature_flags][callback_count][board_rules_present]. */
         case NOTIFY_CMD_QUERY_INFO: {
-            has_been_queried = true;   /* §4.6 handshake-timing: set on first QUERY_INFO service */
+            has_been_queried = true;   /* WRITE-ONLY (§4.6): host enforces at-most-once-per-boot; never read here — see declaration comment. */
             uint8_t payload[4];
             payload[0] = NOTIFY_PROTO_VER;   /* 2 = typed-command capable (firmware-owned, §4.6) */
             payload[1] = NOTIFY_FEATURE_APPLY_HOST_CONTEXT
