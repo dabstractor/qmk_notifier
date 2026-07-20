@@ -1,6 +1,19 @@
 // notifier.c
 #include QMK_KEYBOARD_H
 
+/* Community Module API version guard (PRD §18.3 R3).
+ * In a real QMK module build, QMK_KEYBOARD_H → quantum.h → the generated
+ * community_modules header defines both COMMUNITY_MODULES_API_VERSION and the
+ * ASSERT_COMMUNITY_MODULES_MIN_API_VERSION macro (community_modules.py:252-254),
+ * so this STATIC_ASSERT fires and enforces module API >= 1.0.0 — the floor that
+ * provides housekeeping_task and process_detected_host_os
+ * (data/constants/module_hooks/1.0.0.hjson). In host/stub tests
+ * (-DQMK_KEYBOARD_H='"qmk_keyboard_stub.h"') neither symbol is defined, so the
+ * #ifdef skips this block harmlessly and all stub binaries stay green. */
+#ifdef COMMUNITY_MODULES_API_VERSION
+ASSERT_COMMUNITY_MODULES_MIN_API_VERSION(1, 0, 0);
+#endif
+
 /*
  * Cap the Thompson NFA's processed-pattern budget for the MCU before pulling in
  * pattern_match.c. The host/test default (NFA_MAX_PATTERN 2048) is sized for the
