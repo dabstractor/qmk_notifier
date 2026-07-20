@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Community Module Distribution (§18 Planned Migration)",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Implement the §18 Community Module Distribution requirements (R1–R6) so the module can be consumed as a QMK Community Module instead of a keymap-local git submodule. This phase adds the module manifest, rewrites rules.mk to module context, adds an API-version assertion guard, rewrites README install instructions, and verifies no behavioral regression. The wire protocol (§4), the matcher (§7), the dispatch/OS/host-rules logic (§8/§14), and the notifier.h public API stay byte-for-byte unchanged (R6).",
       "milestones": [
         {
@@ -95,7 +95,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Docs rewrite + verification (R4, R5, R6)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Rewrite README install/setup for the Community Module flow (the only user-facing change), add the leaf-directory naming contract, and verify no behavioral regression via the full host test gate.",
           "tasks": [
             {
@@ -162,14 +162,14 @@
               "type": "Task",
               "id": "P1.M2.T3",
               "title": "Sync changeset-level documentation",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Final cross-cutting documentation sweep beyond the README Setup section: update any architecture overviews, test-count references, file-size tables, or feature lists that reference the submodule flow or omit the community-module capability.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T3.S1",
                   "title": "Sweep README and overview docs for stale submodule references",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",

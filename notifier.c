@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // notifier.c
 #include QMK_KEYBOARD_H
 

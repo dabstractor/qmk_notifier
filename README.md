@@ -22,6 +22,9 @@ QMK Notifier is a powerful QMK module that enables dynamic keymap switching base
   board `DEFINE_SERIAL_*` rules. Strictly opt-in: a keymap without
   `DEFINE_HOST_CALLBACKS` is byte-for-byte unchanged. See
   [Host-Side Rules & Typed Commands](#host-side-rules--typed-commands).
+- **Installs as a QMK Community Module** — a single `keymap.json` entry discovers the
+  build wiring (`rules.mk`, sources, and include path) automatically; no hand-wired
+  `SRC +=`, `RAW_ENABLE`, or `rules.mk` include in your keymap. See [Setup](#setup).
 
 ## How It Works
 
@@ -190,14 +193,10 @@ per-OS maps. Single-OS users skip all three and observe zero change.
 
    ```c
    #include QMK_KEYBOARD_H
-   #include "./qmk_notifier/notifier.h"
+   #include "notifier.h"   /* module dir on the include path via VPATH (see Setup) — no relative path */
 
-   void raw_hid_receive(uint8_t *data, uint8_t length) {
-       hid_notify(data, length);
-       /* other Raw HID modules can be called here too */
-   }
-
-   /* Multi-OS only: the sole required call to feed the detected OS in. */
+   /* Multi-OS only: the sole required call to feed the detected OS in.
+    * (The raw_hid_receive → hid_notify shim from Setup step 3 is still required too.) */
    bool process_detected_host_os_kb(os_variant_t os) {
        notifier_set_os(os);          /* enables DEFINE_*_OS map selection */
        /* …your existing OS-specific logic (e.g. enable_vim_for_mac())… */
