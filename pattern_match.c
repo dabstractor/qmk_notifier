@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pattern_match.c — Thompson-NFA pattern matcher (rebuilt incrementally; see PRD §7). */
 
 #include <stdbool.h>

@@ -1,0 +1,7 @@
+{
+    "module_name": "QMK Notifier",
+    "maintainer": "dabstractor",
+    "license": "GPL-2.0-or-later",
+    "url": "https://github.com/dabstractor/qmk_notifier",
+    "keycodes": []
+}

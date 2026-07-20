@@ -48,22 +48,46 @@ The module uses two primary data structures:
 
 ## Setup
 
-### 1. Add QMK Notifier as a submodule to your keymap
+qmk_notifier is installed as a **QMK Community Module**: the build discovers the
+module's `rules.mk`, its sources, and its include path automatically from a single
+`keymap.json` entry — no hand-wired `SRC +=`, `RAW_ENABLE`, or `include .../rules.mk`
+line in your keymap.
+
+> **⚠️ Clone to a hyphen-free leaf directory.** QMK derives a module's compile-time
+> identity from the *leaf directory name* (`-DCOMMUNITY_MODULE_<LEAF>_ENABLE` and the
+> `<leaf>` hook suffixes). A hyphen is **not** a valid C identifier, so the leaf
+> directory MUST be `qmk_notifier` (underscore) — **never** `qmk-notifier`. The
+> recommended clone path is `modules/<org>/qmk_notifier`. A hyphenated leaf is a
+> **hard build failure** (the generated define/hooks would be invalid C tokens), and
+> it is the one setup mistake most likely to cost you time.
+
+### 1. Clone the module into your userspace
 
 ```bash
-cd /path/to/qmk_firmware/keyboards/your_keyboard
-git submodule add https://github.com/dabstractor/qmk_notifier.git qmk_notifier
+cd /path/to/your/userspace
+git submodule add https://github.com/dabstractor/qmk_notifier.git modules/<org>/qmk_notifier
 ```
 
-### 2. Include the module in your keymap
+### 2. Add the module to your keymap
 
-In your `keymap.c` file:
+Add one entry to the `modules` array in your `keymap.json`:
+
+```json
+{
+    "modules": ["<org>/qmk_notifier"]
+}
+```
+
+### 3. Wire `raw_hid_receive` in `keymap.c`
+
+> **This shim is still required.** `raw_hid_receive` is **not** a Community Module
+> hook (it is not in QMK's module hook surface), so the module cannot auto-register on
+> the Raw HID endpoint. You must define `raw_hid_receive` yourself and forward to
+> `hid_notify()` — this is the one irreducible piece of glue.
 
 ```c
 #include QMK_KEYBOARD_H
-#include "./qmk_notifier/notifier.h"
-
-// ...
+#include "notifier.h"   /* the module dir is on the include path via VPATH — no relative path needed */
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -71,31 +95,21 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
 }
 ```
 
-Multi-OS users also override `process_detected_host_os_kb` to push the detected
-OS into the module — see [Multi-OS Configuration](#multi-os-configuration) for
-the one-line wiring.
+**Multi-OS users** add `OS_DETECTION_ENABLE = yes` to the keymap's `rules.mk` and
+override `process_detected_host_os_kb` to push the detected OS into the module — see
+[Multi-OS Configuration](#multi-os-configuration) for the one-line wiring.
 
-Host-rules users additionally define a named callback registry with
+**Host-rules users** additionally define a named callback registry with
 `DEFINE_HOST_CALLBACKS({ … })` in `keymap.c` (see
-[Host-Side Rules & Typed Commands](#host-side-rules--typed-commands)). No
-`rules.mk` change is required for host rules — the host (QMKonnect) negotiates
-capability automatically at connect via the `QUERY_INFO` typed command, then
-drives `SET_OS` + `APPLY_HOST_CONTEXT`. Omit the macro and the module behaves
-exactly as before.
+[Host-Side Rules & Typed Commands](#host-side-rules--typed-commands)). No `rules.mk`
+change is required for host rules — the host (QMKonnect) negotiates capability
+automatically at connect via the `QUERY_INFO` typed command, then drives `SET_OS` +
+`APPLY_HOST_CONTEXT`. Omit the macro and the module behaves exactly as before.
 
-### 3. Update your rules.mk
-
-Add the following line to your keymap's `rules.mk` file:
-
-```
-include keyboards/handwired/[manufacturer]/[keyboard_name]/qmk_notifier/rules.mk
-```
-
-```make
-# Optional — Multi-OS support only (single-OS users skip this).
-# Enables QMK's OS detection so the keyboard can select per-OS maps.
-OS_DETECTION_ENABLE = yes
-```
+> **Configurator.** Community Modules cannot be built by the QMK Configurator, and
+> this module also requires a custom `raw_hid_receive` in `keymap.c` (which JSON
+> keymaps cannot express) — so Configurator was never an option. Use a source
+> `keymap.c` together with a `keymap.json`.
 
 ## Usage
 

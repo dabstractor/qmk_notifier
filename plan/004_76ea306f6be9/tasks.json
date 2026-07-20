@@ -18,14 +18,14 @@
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Add qmk_module.json manifest (R1)",
-              "status": "Failed",
+              "status": "Complete",
               "description": "Create the QMK Community Module manifest at the repo root with module_name, maintainer, license, url, and empty keycodes. No features block (RAW_ENABLE is not data-driven; §18.2 confirms no rawhid schema entry).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T1.S1",
                   "title": "Create qmk_module.json at repo root",
-                  "status": "Failed",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/004_76ea306f6be9/architecture/external_deps.md §qmk_module.json Schema — the schema requires only `module_name` and `maintainer`; `license`, `url`, `keycodes`, `features` are optional. Example modules in qmk_firmware (hello_world, super_alt_tab) both use `\"license\": \"GPL-2.0-or-later\"`. There is NO LICENSE file in this repo currently — QMK is GPLv2+, so GPL-2.0-or-later is the safe SPDX default.\n2. INPUT: None — this is a new file at the repo root.\n3. LOGIC: Per §18.3 R1, create `qmk_module.json` with: `module_name` = `\"QMK Notifier\"`, `maintainer` = `\"dabstractor\"`, `license` = `\"GPL-2.0-or-later\"` (GPL-compatible; matches QMK's own license and all example modules in qmk_firmware/modules/), `url` = `\"https://github.com/dabstractor/qmk_notifier\"`, `keycodes` = `[]`. Do NOT include a `features` block — the module declares no data-driven feature keys (`RAW_ENABLE` is set in rules.mk, not here; §18.2 confirms no `rawhid` schema entry exists). Do NOT include keycodes — the public surface is macros + functions invoked from keymap.c, not keymap-bindable keys.\n4. OUTPUT: `qmk_module.json` present at repo root. Valid against the `qmk.community_module.v1` schema. If a QMK userspace build listing this module is available, `qmk lint` should be clean.\n5. MOCKING: None — this is a static JSON manifest.\n6. DOCS: [Mode A] The manifest fields are self-documenting. The `license` field must use the repo's real SPDX identifier — use `GPL-2.0-or-later` since there is no LICENSE file and QMK requires GPL compatibility.",
@@ -102,14 +102,14 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Rewrite README install/setup for module flow + leaf-naming contract (R4, R5)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Replace the README 'Setup' section's submodule flow (git submodule into keyboard dir, relative #include, include rules.mk line, SRC/RAW_ENABLE hand-wiring) with the Community Module flow (clone into userspace modules/ dir, one keymap.json modules entry, no-relative #include, irreducible raw_hid_receive shim). Add the hyphen-free leaf-directory naming contract.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Replace the submodule Setup flow with the Community Module flow",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1",
@@ -132,14 +132,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Verify no behavioral change: host gates green + R6 invariant (R6)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Re-run the full §11.2 host test gate with the §18 changes in place. Confirm the R3 #ifdef guard did not perturb the stub build. Confirm wire protocol, matcher, dispatch, and notifier.h API are byte-for-byte unchanged.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Re-run the full §11.2 host gate; confirm module flow is byte-identical",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T3.S1",
