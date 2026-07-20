@@ -1754,13 +1754,14 @@ piece of glue that is irreducible.
       "module_name": "QMK Notifier",
       "maintainer": "dabstractor",
       "license": "<SPDX — confirm the actual repo license; must be GPL-compatible>",
-      "url": "https://github.com/dabstractor/qmk_notifier",
-      "keycodes": []
+      "url": "https://github.com/dabstractor/qmk_notifier"
   }
   ```
   No `features` block (the module declares no data-driven features). No
-  `keycodes` (the public surface is macros + functions invoked from the keymap,
-  not keymap-bindable keys).
+  `keycodes` field (the public surface is macros + functions invoked from the
+  keymap, not keymap-bindable keys). The `qmk.community_module.v1` schema marks
+  `keycodes` with `minItems: 1`, so the field must be **omitted** — never set to
+  `[]` — when the module exposes no keymap-bindable keys.
 
 - **R2 — `rules.mk` rewrite.** The module-context `rules.mk` becomes:
   ```make
