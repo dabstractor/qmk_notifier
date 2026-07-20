@@ -1,6 +1,6 @@
-# QMK-Notifier
+# QMK Notifier
 
-QMK-Notifier is a powerful QMK module that enables dynamic keymap switching based on active applications. This module runs directly on your keyboard firmware, pattern-matching against window titles and application identifiers to automatically activate layers or execute commands when specific applications gain focus.
+QMK Notifier is a powerful QMK module that enables dynamic keymap switching based on active applications. This module runs directly on your keyboard firmware, pattern-matching against window titles and application identifiers to automatically activate layers or execute commands when specific applications gain focus.
 
 ## Features
 
@@ -25,7 +25,7 @@ QMK-Notifier is a powerful QMK module that enables dynamic keymap switching base
 
 ## How It Works
 
-QMK-Notifier watches for messages sent from your computer to your keyboard via Raw HID. When a string is received (typically an application class and window title), the module pattern-matches it against user-defined rules and activates the appropriate layer or executes callback functions when a match is found.
+QMK Notifier watches for messages sent from your computer to your keyboard via Raw HID. When a string is received (typically an application class and window title), the module pattern-matches it against user-defined rules and activates the appropriate layer or executes callback functions when a match is found.
 
 ### Wire format
 
@@ -48,11 +48,11 @@ The module uses two primary data structures:
 
 ## Setup
 
-### 1. Add QMK-Notifier as a submodule to your keymap
+### 1. Add QMK Notifier as a submodule to your keymap
 
 ```bash
 cd /path/to/qmk_firmware/keyboards/your_keyboard
-git submodule add https://github.com/dabstractor/qmk-notifier.git qmk-notifier
+git submodule add https://github.com/dabstractor/qmk_notifier.git qmk_notifier
 ```
 
 ### 2. Include the module in your keymap
@@ -61,7 +61,7 @@ In your `keymap.c` file:
 
 ```c
 #include QMK_KEYBOARD_H
-#include "./qmk-notifier/notifier.h"
+#include "./qmk_notifier/notifier.h"
 
 // ...
 
@@ -88,7 +88,7 @@ exactly as before.
 Add the following line to your keymap's `rules.mk` file:
 
 ```
-include keyboards/handwired/[manufacturer]/[keyboard_name]/qmk-notifier/rules.mk
+include keyboards/handwired/[manufacturer]/[keyboard_name]/qmk_notifier/rules.mk
 ```
 
 ```make
@@ -176,7 +176,7 @@ per-OS maps. Single-OS users skip all three and observe zero change.
 
    ```c
    #include QMK_KEYBOARD_H
-   #include "./qmk-notifier/notifier.h"
+   #include "./qmk_notifier/notifier.h"
 
    void raw_hid_receive(uint8_t *data, uint8_t length) {
        hid_notify(data, length);
@@ -432,15 +432,15 @@ opting in.
 
 ## Companion Projects
 
-QMK-Notifier (this firmware C module) is the on-keyboard **receiver + matcher +
+QMK Notifier (this firmware C module) is the on-keyboard **receiver + matcher +
 actor**. It is designed to work with companion desktop software that detects
 the foreground window and sends `class\x1Dtitle` to your keyboard:
 
 - [QMKonnect](https://github.com/dabstractor/qmkonnect) - Rust cross-platform **desktop daemon**. Detects the foreground window and sends the `class\x1Dtitle` string to the keyboard over Raw HID.
-- [qmk_notifier](https://github.com/dabstractor/qmk_notifier) *(underscore)* - Rust **transport crate** that QMKonnect links. Owns the wire framing: the magic header, 32-byte report chunking, the `ETX` terminator, and the device cache.
+- [qmk-notifier](https://github.com/dabstractor/qmk-notifier) - Rust **transport crate** that QMKonnect links. Owns the wire framing: the magic header, 32-byte report chunking, the `ETX` terminator, and the device cache.
 
-> **Naming hazard:** `qmk-notifier` (hyphen) is this firmware C module.
-> `qmk_notifier` (underscore) is the Rust transport crate. The two halves talk
+> **Naming note:** `qmk_notifier` (underscore) is this firmware C module.
+> `qmk-notifier` (hyphen) is the Rust transport crate. The two halves talk
 > over the fixed wire protocol described in *How It Works*.
 
 Community / third-party alternatives:
@@ -453,7 +453,7 @@ macOS and other Wayland environments are planned for QMKonnect in the future.
 
 ## Compatibility with Other Raw HID Modules
 
-QMK-Notifier is compatible with other raw HID modules. It identifies its own incoming messages by checking for the specific sequence of characters `0x81` followed by `0x9F` at the start of the message. Any messages that do not match this pattern are ignored, ensuring that it does not interfere with the operation of other modules on the same raw HID interface.
+QMK Notifier is compatible with other raw HID modules. It identifies its own incoming messages by checking for the specific sequence of characters `0x81` followed by `0x9F` at the start of the message. Any messages that do not match this pattern are ignored, ensuring that it does not interfere with the operation of other modules on the same raw HID interface.
 
 ## Documentation
 
@@ -559,7 +559,7 @@ performance remains excellent — the pathological NFA stress case
 
 ## Contributing
 
-Contributions to QMK-Notifier are welcome and appreciated! Here's how you can help:
+Contributions to QMK Notifier are welcome and appreciated! Here's how you can help:
 
 1. **Start a conversation:** Before working on a major feature, please open an issue to discuss your ideas. This ensures your time is well-spent and aligns with the project's direction.
 
@@ -569,6 +569,6 @@ Contributions to QMK-Notifier are welcome and appreciated! Here's how you can he
 
 4. **Code quality:** Please follow the existing code style and include tests for new functionality when possible.
 
-The goal of QMK-Notifier is to create a powerful, flexible system for context-aware keyboards. Your contributions help!
+The goal of QMK Notifier is to create a powerful, flexible system for context-aware keyboards. Your contributions help!
 
 

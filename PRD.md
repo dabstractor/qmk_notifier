@@ -1,11 +1,11 @@
-# SPECIFICATION — qmk-notifier (QMK Firmware Module)
+# SPECIFICATION — qmk_notifier (QMK Firmware Module)
 
 **Master Product Requirements & Engineering Specification**
 Target: a single document complete enough for a developer agent to one-shot this
 entire codebase from scratch. Read it top to bottom before writing any code.
 
 > **Product scope.** This is the complete product & engineering specification
-> for the qmk-notifier firmware module. The module MUST provide: raw-HID
+> for the qmk_notifier firmware module. The module MUST provide: raw-HID
 > reception with the `0x81 0x9F` coexistence guard and multi-report reassembly
 > (§4); the Thompson-NFA pattern matcher (§7); per-OS command/layer map selection
 > — a strict opt-in overlay where a default-only keymap is byte-identical to a
@@ -14,15 +14,16 @@ entire codebase from scratch. Read it top to bottom before writing any code.
 > (§4.7), and the board-side host-rules machinery (`clear_board`, the
 > `host_layer`/host-callback trackers, the named callback registry) in §14. The
 > typed-command wire contract is canonical in §4.6; the host-side orchestration
-> is in `qmkonnect/spec/HOST_RULES.md` and the transport in the `qmk_notifier`
+> is in `qmkonnect/spec/HOST_RULES.md` and the transport in the `qmk-notifier`
 > crate `PRD.md`.
 
-> **Scope of "this codebase."** This document specifies **qmk-notifier** (hyphen) —
-> the **C firmware module** that runs on a QMK keyboard. It is *not* the desktop
-> app (that is `QMKonnect`, repo `dabstractor/qmkonnect`) and *not* the Rust
-> transport crate (`qmk_notifier`, underscore, repo `dabstractor/qmk_notifier`).
-> Those are the other two nodes of the ecosystem (see §1.2). A developer
-> rebuilding **this** repo produces only the four source files in §3.
+> **Scope of "this codebase."** This document specifies **qmk_notifier**
+> (underscore) — the **C firmware module** that runs on a QMK keyboard. It is
+> *not* the desktop app (that is `QMKonnect`, repo `dabstractor/qmkonnect`) and
+> *not* the Rust transport crate (`qmk-notifier`, hyphen, repo
+> `dabstractor/qmk-notifier`). Those are the other two nodes of the ecosystem
+> (see §1.2). A developer rebuilding **this** repo produces only the four source
+> files in §3.
 
 ---
 
@@ -45,14 +46,15 @@ entire codebase from scratch. Read it top to bottom before writing any code.
 15. [Appendix A — Pattern-Semantics Reference Table](#15-appendix-a--pattern-semantics-reference-table)
 16. [Appendix B — Constants Reference](#16-appendix-b--constants-reference)
 17. [Appendix C — File Sizes & Live Source of Truth](#17-appendix-c--file-sizes--live-source-of-truth)
+18. [Community Module Distribution (Planned Migration)](#18-community-module-distribution-planned-migration)
 
 ---
 
 ## 1. Product Overview
 
-### 1.1 What qmk-notifier is
+### 1.1 What qmk_notifier is
 
-**qmk-notifier** is a QMK **module** (consumed as a git submodule inside a QMK
+**qmk_notifier** is a QMK **module** (consumed as a git submodule inside a QMK
 keymap) that turns a mechanical keyboard into a *context-aware* keyboard. It
 listens on QMK's Raw HID interface for short messages sent by a companion
 desktop app, **pattern-matches** each message against user-defined rules, and on
@@ -66,7 +68,7 @@ on every focus change as the string
 <application_class>\x1D<window_title>
 ```
 
-qmk-notifier reassembles that string from 32-byte HID reports, sanitizes it, and
+qmk_notifier reassembles that string from 32-byte HID reports, sanitizes it, and
 runs it through two user-supplied lookup tables — `command_map` (pattern →
 callback) and `layer_map` (pattern → QMK layer). The user writes those tables
 with two macros, `DEFINE_SERIAL_COMMANDS({ ... })` and
@@ -79,7 +81,7 @@ A single keyboard often travels between macOS, Windows, and Linux, where the
 *same application reports entirely different `application_class` strings* (e.g.
 a terminal is `Terminal`/`iTerm` on macOS, `WindowsTerminal` on Windows,
 `alacritty`/`kitty` on Linux; a browser is `Google Chrome` on macOS vs
-`chrome`/`Chrome_WidgetWin_1` elsewhere). To support this, qmk-notifier lets a
+`chrome`/`Chrome_WidgetWin_1` elsewhere). To support this, qmk_notifier lets a
 keymap define **per-OS** command and layer maps in addition to an optional
 **default** map. The detected host OS selects which maps are consulted:
 **OS-specific rules are scanned first and take precedence; the default map is a
@@ -93,13 +95,13 @@ itself, so it carries no link dependency on the OS-detection subsystem.
 
 | Project | Repo | Language | Role |
 |---|---|---|---|
-| **qmk-notifier** ← *this repo* | `dabstractor/qmk-notifier` | C | On-keyboard **receiver + matcher + actor**. Consumed as a submodule by the user's keymap. |
+| **qmk_notifier** ← *this repo* | `dabstractor/qmk_notifier` | C | On-keyboard **receiver + matcher + actor**. Consumed as a submodule by the user's keymap. |
 | **QMKonnect** | `dabstractor/qmkonnect` | Rust | Cross-platform **desktop daemon**. Detects the foreground window and *sends* the `class\x1Dtitle` string. Never decides behavior. |
-| **qmk_notifier** (underscore) | `dabstractor/qmk_notifier` | Rust | **Transport crate** QMKonnect links. Owns the wire framing (magic header, 32-byte chunking, ETX terminator, device cache). |
-| **qmk_firmware** | `qmk/qmk_firmware` | C | Upstream QMK. The host firmware; qmk-notifier plugs into it via `RAW_ENABLE`. |
+| **qmk-notifier** (hyphen) | `dabstractor/qmk-notifier` | Rust | **Transport crate** QMKonnect links. Owns the wire framing (magic header, 32-byte chunking, ETX terminator, device cache). |
+| **qmk_firmware** | `qmk/qmk_firmware` | C | Upstream QMK. The host firmware; qmk_notifier plugs into it via `RAW_ENABLE`. |
 
-> **Naming hazard (read once):** `qmk-notifier` (hyphen) = the firmware C module
-> (this repo). `qmk_notifier` (underscore) = the Rust transport crate. The two
+> **Naming note (read once):** `qmk_notifier` (underscore) = the firmware C
+> module (this repo). `qmk-notifier` (hyphen) = the Rust transport crate. The two
 > halves communicate over a tiny fixed wire protocol (§4). Any byte wrong and the
 > halves will not talk.
 
@@ -247,7 +249,7 @@ The repo root contains exactly these source files plus tests, docs, and the test
 runner. A from-scratch rebuild must produce:
 
 ```
-qmk-notifier/
+qmk_notifier/
 ├── notifier.h                 # public API: structs, macros, OS-selection decls (~80 lines)
 ├── notifier.c                 # receiver, reassembler, dispatcher, OS select (~410 lines)
 ├── pattern_match.h            # pattern_match() public decl + doc comment   (~53 lines)
@@ -288,7 +290,7 @@ qmk-notifier/
 ## 4. The Wire Protocol Contract (most important section)
 
 > Get any byte here wrong and the desktop app and the firmware will not talk.
-> This is the exact contract with `qmk_notifier` (the Rust crate) and `QMKonnect`.
+> This is the exact contract with `qmk-notifier` (the Rust crate) and `QMKonnect`.
 
 ### 4.1 The logical message
 
@@ -310,7 +312,7 @@ Examples produced by the desktop:
 - macOS without Screen Recording → `Safari\x1D` (app name, empty title)
 
 > The desktop builds the message **without** a terminator. The transport crate
-> (`qmk_notifier`) appends the **ETX** (`0x03`) terminator *before* framing.
+> (`qmk-notifier`) appends the **ETX** (`0x03`) terminator *before* framing.
 > The firmware never sees a terminator in the user payload until the crate adds it.
 
 ### 4.2 Report framing on the wire
@@ -345,8 +347,8 @@ reassembles it into the 32-byte logical report before calling the hook — so th
 firmware always sees `length == 32`. Do not handle `length == 8`.)
 
 ```
-data[0]  = 0x81      ← qmk-notifier magic byte 1
-data[1]  = 0x9F      ← qmk-notifier magic byte 2
+data[0]  = 0x81      ← qmk_notifier magic byte 1
+data[1]  = 0x9F      ← qmk_notifier magic byte 2
 data[2..]= <payload bytes for this report>
 ```
 
@@ -365,12 +367,12 @@ reassembles 32 internally). The firmware MUST always send it. See `notifier.c` �
 > ("fixed raw hid response size"), which sends the constant `RAW_REPORT_SIZE`
 > (32). The "ack is silently dropped by QMK because `length == RAW_EPSIZE`"
 > wording that appeared in older revisions of this spec, the desktop
-> `PROTOCOL.md`, and the `qmk_notifier` crate comments is stale carryover from
+> `PROTOCOL.md`, and the `qmk-notifier` crate comments is stale carryover from
 > that pre-fix state and has been corrected in all three.
 
 ### 4.5 Why the magic header exists
 
-Multiple Raw HID modules may share the one interface (e.g. `qmk-notifier` +
+Multiple Raw HID modules may share the one interface (e.g. `qmk_notifier` +
 `qmk-field-kit` + VIA). The reference keymap wires:
 
 ```c
@@ -386,7 +388,7 @@ only consumes its own messages. `0x81 0x9F` is arbitrary but fixed forever.
 ### 4.6 Typed-command namespace (canonical owner)
 
 This section is the **canonical wire contract** for the typed-command namespace.
-The desktop `PROTOCOL.md` and the `qmk_notifier` crate `PRD.md` mirror it; where
+The desktop `PROTOCOL.md` and the `qmk-notifier` crate `PRD.md` mirror it; where
 they disagree, **this section wins** (the firmware dictates the conditions under
 which communication can happen — see `qmkonnect/spec/HOST_RULES.md` for the
 host-side orchestration).
@@ -484,7 +486,7 @@ module by the keymap via `notifier_set_os(os_variant_t)` (§5.2, §8.7).
 spoofing macOS for media-key compat, VMs, `OS_UNSURE`). When no host is
 connected, this is the only OS signal.
 
-**Host-authoritative (when connected).** The host (QMKonnect / `qmk_notifier`
+**Host-authoritative (when connected).** The host (QMKonnect / `qmk-notifier`
 crate) knows its own OS **with certainty** and it never changes at runtime (it is
 the OS the desktop is running on). The host declares its OS at connect via the
 `SET_OS` typed command (`0x03`, §4.6): `[0x81][0x9F][0xF0][0x03][os_byte][0x03]`
@@ -1103,7 +1105,7 @@ Exactly two lines:
 
 ```make
 RAW_ENABLE = yes
-SRC += qmk-notifier/notifier.c
+SRC += qmk_notifier/notifier.c
 ```
 
 `RAW_ENABLE` turns on QMK's Raw HID feature (usage page `0xFF60` / usage `0x61`,
@@ -1111,7 +1113,7 @@ SRC += qmk-notifier/notifier.c
 `pattern_match.c`). The user's keymap pulls this in with:
 
 ```make
-include keyboards/<...>/<keyboard>/qmk-notifier/rules.mk
+include keyboards/<...>/<keyboard>/qmk_notifier/rules.mk
 ```
 
 Do **not** hand-write `SRC += lib/...` or point at a non-existent
@@ -1126,11 +1128,11 @@ Do **not** hand-write `SRC += lib/...` or point at a non-existent
 1. **Add the submodule** under the keyboard dir:
    ```bash
    cd <qmk_firmware>/keyboards/<your_keyboard>
-   git submodule add https://github.com/dabstractor/qmk-notifier.git qmk-notifier
+   git submodule add https://github.com/dabstractor/qmk_notifier.git qmk_notifier
    ```
 2. **In the keymap's `rules.mk`:**
    ```make
-   include keyboards/<...>/<keyboard>/qmk-notifier/rules.mk
+   include keyboards/<...>/<keyboard>/qmk_notifier/rules.mk
    ```
    **Multi-OS users only** add QMK's OS-detection feature (single-OS / default-only
    users skip this — multi-OS is inert without it):
@@ -1141,7 +1143,7 @@ Do **not** hand-write `SRC += lib/...` or point at a non-existent
    multi-OS, push the detected OS into the module:
    ```c
    #include QMK_KEYBOARD_H
-   #include "./qmk-notifier/notifier.h"
+   #include "./qmk_notifier/notifier.h"
 
    void raw_hid_receive(uint8_t *data, uint8_t length) {
        hid_notify(data, length);
@@ -1500,11 +1502,11 @@ Host-side rules move app→layer and app→callback matching onto the desktop ho
 commands, expose a named callback registry, track a host layer + host-callback
 state separate from its board state, and honor a per-window stack/replace
 decision.** The host-side design is canonical in `qmkonnect/spec/HOST_RULES.md`;
-the transport in the `qmk_notifier` crate `PRD.md`; the wire contract here in
+the transport in the `qmk-notifier` crate `PRD.md`; the wire contract here in
 §4.6.
 
 > **Matcher location.** The host-side pattern matcher lives in **`qmkonnect`**
-> (not the `qmk_notifier` crate), with full parity to this module's
+> (not the `qmk-notifier` crate), with full parity to this module's
 > `pattern_match.c` (the firmware matcher + its test corpus are the single source
 > of truth for match semantics). The crate is transport-only.
 
@@ -1634,7 +1636,7 @@ Verified against the live test suite (`/tmp/probe` harness, §11.2C style).
 
 | Constant | Value | Where | Meaning |
 |---|---|---|---|
-| Magic header | `0x81 0x9F` | first 2 payload bytes | qmk-notifier coexistence guard |
+| Magic header | `0x81 0x9F` | first 2 payload bytes | qmk_notifier coexistence guard |
 | Group Separator (GS) | `0x1D` (29) | `GS_DELIMITER` | class\|title delimiter in payload |
 | End of Text (ETX) | `0x03` (3) | `ETX_TERMINATOR` | message terminator (appended by the transport crate) |
 | `RAW_REPORT_SIZE` | `32` | notifier.c | logical HID report size (all QMK protocols) |
@@ -1692,6 +1694,164 @@ not match byte-for-byte as long as all tests pass and all invariants hold):
 > and the test corpus (`test_*.c`, `run_all_tests.sh`). Where this spec and the
 > code disagree, **the code + the passing tests win**; report the drift. This
 > spec captures the intended design at the current `HEAD`.
+
+---
+
+## 18. Community Module Distribution (Planned Migration)
+
+> **Status: planned, not yet implemented.** This section specifies the
+> requirements for redistributing this module as a **QMK Community Module**
+> instead of a keymap-local git submodule. It is forward-looking; the current
+> build (§9, §10.1) remains the submodule flow until this section is marked
+> done. Nothing here changes the wire protocol (§4), the matcher (§7), or the
+> runtime behavior (§8/§14).
+
+### 18.1 Motivation
+
+Today a user must (a) clone this repo *inside* their keyboard directory, (b)
+hand-write a keyboard-relative `include .../rules.mk` line, and (c) hand-write
+the `SRC +=` / `RAW_ENABLE` wiring. A Community Module makes the module
+self-declaring: the user adds one `"modules"` entry to `keymap.json` and the
+build discovers `rules.mk`, the source files, and the include path
+automatically.
+
+**The underscore rename is what makes this possible.** The QMK build system
+derives a module's compile-time identity from the *leaf directory name*
+(`COMMUNITY_MODULE_<NAME>_ENABLE`, `process_record_<name>` hooks). A hyphen is
+not a valid C identifier, so the old `qmk-notifier` slug could never have been
+a module leaf name. `qmk_notifier` (underscore) is a valid identifier, so it
+can — the rename was a prerequisite for this migration.
+
+### 18.2 Verified build-system mechanics (ground truth from `qmk_firmware`)
+
+The generator `lib/python/qmk/cli/generate/community_modules.py` emits, per
+module (using only the leaf directory name):
+
+- `SRC += $(wildcard <module_path>/<leaf>.c)` — **auto-compiles `<leaf>.c`
+  only**; any other `.c` must be added via the module's `rules.mk`.
+- `VPATH += <module_path>` — and `VPATH` is on the compiler include path
+  (`builddefs/build_keyboard.mk`: `..._INC := $(VPATH) $(EXTRAINCDIRS) ...`),
+  so `#include "notifier.h"` from the user's keymap and `#include
+  "pattern_match.c"` from `notifier.c` both resolve.
+- `-include <module_path>/rules.mk` — so `RAW_ENABLE = yes` set there takes
+  effect globally. `RAW_ENABLE` is **not** a data-driven feature key (there is
+  no `rawhid` entry in `data/schemas/`), so it MUST be set in `rules.mk`, not
+  in `qmk_module.json` `features`.
+- `-DCOMMUNITY_MODULE_<LEAF>_ENABLE=TRUE` and module hooks `*_<leaf>` —
+  require `<leaf>` to be a valid C identifier.
+
+**Hard subsystem limit:** `raw_hid_receive` is **not** in the community-module
+hook surface (`data/constants/module_hooks/*.hjson`). The module therefore
+**cannot** auto-register on the Raw HID endpoint; the user must still define
+`raw_hid_receive` in their keymap and call `hid_notify()`. This is the one
+piece of glue that is irreducible.
+
+### 18.3 Requirements
+
+- **R1 — Manifest.** Add `qmk_module.json` at the repo root:
+  ```json
+  {
+      "module_name": "QMK Notifier",
+      "maintainer": "dabstractor",
+      "license": "<SPDX — confirm the actual repo license; must be GPL-compatible>",
+      "url": "https://github.com/dabstractor/qmk_notifier",
+      "keycodes": []
+  }
+  ```
+  No `features` block (the module declares no data-driven features). No
+  `keycodes` (the public surface is macros + functions invoked from the keymap,
+  not keymap-bindable keys).
+
+- **R2 — `rules.mk` rewrite.** The module-context `rules.mk` becomes:
+  ```make
+  RAW_ENABLE = yes
+  SRC += notifier.c
+  ```
+  `notifier.c` does **not** match the leaf name `qmk_notifier`, so it is not
+  auto-compiled by the wildcard and must be listed explicitly.
+  `pattern_match.c` is pulled in by `notifier.c`'s `#include "pattern_match.c"`
+  (resolved via VPATH), so it is **not** a separate `SRC` entry. The current
+  `SRC += qmk_notifier/notifier.c` line is a submodule-context path and is
+  replaced, not retained.
+
+- **R3 — API-version assertion, host-test-guarded.** Add at the top of
+  `notifier.c`, immediately after `#include QMK_KEYBOARD_H`:
+  ```c
+  #ifdef COMMUNITY_MODULES_API_VERSION
+  ASSERT_COMMUNITY_MODULES_MIN_API_VERSION(1, 0, 0);
+  #endif
+  ```
+  In a real module build, `QMK_KEYBOARD_H` → `quantum.h` → `community_modules.h`
+  defines both the macro and `COMMUNITY_MODULES_API_VERSION`, so the assert
+  fires. In the host/stub tests
+  (`-DQMK_KEYBOARD_H='"qmk_keyboard_stub.h"'`), neither is defined, so the
+  guard skips it and all stub binaries stay green unchanged. Target `1.0.0`
+  (the floor that provides `housekeeping_task` and `process_detected_host_os`).
+
+- **R4 — Leaf-directory naming contract.** Users MUST clone to a hyphen-free
+  leaf. Because the repo slug is `qmk_notifier` (a valid identifier), the
+  recommended clone path is `modules/<org>/qmk_notifier`, giving `keymap.json`
+  `"modules": ["<org>/qmk_notifier"]`. A hyphenated leaf is a hard failure
+  (the generated `-D` define and any hooks would be invalid C tokens); this
+  must be stated explicitly in the README.
+
+- **R5 — README install rewrite.** Replace the "Setup" submodule flow with:
+  ```bash
+  cd /path/to/your/userspace
+  git submodule add https://github.com/dabstractor/qmk_notifier.git modules/<org>/qmk_notifier
+  ```
+  ```json
+  { "modules": ["<org>/qmk_notifier"] }
+  ```
+  ```c
+  #include QMK_KEYBOARD_H
+  #include "notifier.h"   /* module dir is on -I via VPATH — no relative path */
+
+  void raw_hid_receive(uint8_t *data, uint8_t length) { hid_notify(data, length); }
+  ```
+  Gone vs. today: the in-keyboard clone, the `#include "./qmk_notifier/notifier.h"`
+  relative path, the `include .../rules.mk` line, and the `SRC +=`/`RAW_ENABLE`
+  hand-wiring. **Still required** (the R-limit above): the `raw_hid_receive`
+  shim. Multi-OS users still set `OS_DETECTION_ENABLE = yes` and call
+  `notifier_set_os` from `process_detected_host_os_kb`.
+
+- **R6 — No behavioral change.** The wire protocol (§4), the matcher (§7), the
+  dispatch / OS / host-rules logic (§8 / §14), and the public API in
+  `notifier.h` are byte-for-byte unchanged. A keymap that worked under the
+  submodule flow must work identically under the module flow, modulo the
+  include path and the removal of the `rules.mk` include line.
+
+### 18.4 Tradeoffs & open decisions
+
+- **OS auto-wiring (deferred).** `process_detected_host_os` *is* a module hook,
+  so we *could* ship `process_detected_host_os_qmk_notifier()` calling
+  `notifier_set_os(detected_host_os())` and remove the user's manual OS push.
+  This reverses the "push-only by design — the module never calls
+  `detected_host_os()`" invariant (§1.1, §8.7) and forces `OS_DETECTION_ENABLE`
+  on every user. **Decision required:** keep push-only (recommended) or
+  auto-wire.
+- **Legacy submodule flow.** The module-context `rules.mk` (R2) is
+  incompatible with the old "clone into keyboard dir + `SRC += ...`" flow.
+  **Decision required:** retire the submodule flow entirely (recommended) or
+  maintain both.
+- **Configurator.** Community Modules cannot be built by the QMK Configurator.
+  Irrelevant here — this module requires a custom `raw_hid_receive` in
+  `keymap.c`, which JSON keymaps cannot express, so Configurator support was
+  never an option.
+
+### 18.5 Acceptance
+
+- [ ] `qmk_module.json` present and valid (`qmk lint` clean against a
+      userspace build that lists the module).
+- [ ] A clean keymap that adds `"modules": ["<org>/qmk_notifier"]`, includes
+      `notifier.h`, defines `raw_hid_receive → hid_notify`, and uses
+      `DEFINE_SERIAL_*` compiles and reacts to desktop focus changes
+      identically to today.
+- [ ] `RAW_ENABLE` is on and the `0x81 0x9F` endpoint is live, with no manual
+      `rules.mk` include line in the keymap.
+- [ ] Host test gates unchanged: `./run_all_tests.sh` and
+      `./run_notifier_stub_tests.sh` pass with the R3 guard in place.
+- [ ] README documents only the module flow (R4 leaf-name contract included).
 
 ---
 
