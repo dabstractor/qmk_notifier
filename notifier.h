@@ -28,6 +28,10 @@ size_t get_layer_map_size(void);
 // The OS selector — pushed from the keymap (§8.7). os_variant_t comes from
 // os_detection.h (included above). ONLY public OS entry point (§2 F8.2).
 void notifier_set_os(os_variant_t os);
+// F18 mod-tap-assist flush hook — WEAK no-op default in notifier.c; a keymap
+// opts in by defining it (e.g. calling its engine's flush). The module ships
+// no tap/hold behavior (§4.6 / MOD_TAP_ASSIST §5.1).
+void notifier_on_mouse_activity(uint8_t kind);
 // Host-callback registry accessors (user overrides via DEFINE_HOST_CALLBACKS;
 // module provides weak {NULL,0} defaults — §14). ID = array index.
 host_callback_t* get_host_callbacks(void);
@@ -49,13 +53,21 @@ size_t           get_host_callbacks_size(void);
 #define NOTIFY_CMD_QUERY_CALLBACK     0x02   // §4.6
 #define NOTIFY_CMD_SET_OS             0x03   // §4.6 / §4.7
 #define NOTIFY_CMD_APPLY_HOST_CONTEXT 0x05   // §4.6 / §14
+#define NOTIFY_CMD_MOUSE_ACTIVITY     0x06   // §4.6 / F18 (mod-tap assist)
 // Protocol version: 1 = legacy string-only; 2 = typed-command capable (§4.6).
 #define NOTIFY_PROTO_VER              2      // §4.6
 // feature_flags BIT positions (§4.6); notifier.c builds the mask at runtime:
-//   0x01 | (get_host_callbacks_size()>0 ? 0x02 : 0)
+//   0x01 | (get_host_callbacks_size()>0 ? 0x02 : 0) | 0x08 (MOUSE_ACTIVITY — always)
 #define NOTIFY_FEATURE_APPLY_HOST_CONTEXT 0x01  // §4.6
 #define NOTIFY_FEATURE_CALLBACK_REGISTRY  0x02  // §4.6
 #define NOTIFY_FEATURE_VIA_COEXIST        0x04  // §4.6 (reserved)
+#define NOTIFY_FEATURE_MOUSE_ACTIVITY     0x08  // §4.6 / F18 — always advertised
+// ---- Mod-Tap Assist kinds (F18, §4.6 / MOD_TAP_ASSIST §5.1) -------------
+// bitflags; reserved bits legal on the wire; forwarded VERBATIM (never
+// validated) so future kinds need no firmware change.
+#define NOTIFIER_MOUSE_WHEEL_V 0x01
+#define NOTIFIER_MOUSE_WHEEL_H 0x02
+#define NOTIFIER_MOUSE_BUTTON  0x04
 // Host-callback registry cap (§14) — bounds host_cb_enabled[] in notifier.c.
 #define HOST_CALLBACK_MAX              32     // §14
 // Host layers reserved >= 224 so they resolve above board layers (§14/§16;

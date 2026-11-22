@@ -144,6 +144,8 @@ static bool typed_awaiting_terminator = false;
  *   SET_OS (0x03): 1 fixed arg (os_byte)
  *   APPLY_HOST_CONTEXT (0x05): 3 fixed args (layer, flags, count) — the variable
  *     ids tail is appended after `count` is read from the buffer.
+ *   MOUSE_ACTIVITY (0x06): 1 fixed arg (kind bitflags) — consumed literally so
+ *     kind==0x03 can't terminate the frame early (same class as BUG-1/BUG-2).
  *   unknown / 0x04 (reserved VIA-coexist): 0 — dispatch at the next ETX.
  * Returns 0xFFFF for an unrecognized id so the caller can detect it; the byte
  * loop treats that as "consume nothing literally" (ETX-honored immediately),
@@ -154,6 +156,7 @@ static uint16_t typed_fixed_arg_bytes(uint8_t cmd_id) {
         case NOTIFY_CMD_QUERY_CALLBACK:     return 1;
         case NOTIFY_CMD_SET_OS:             return 1;
         case NOTIFY_CMD_APPLY_HOST_CONTEXT: return 3;
+        case NOTIFY_CMD_MOUSE_ACTIVITY:     return 1;
         default:                            return 0xFFFF;
     }
 }
@@ -185,6 +188,20 @@ __attribute__((weak)) size_t get_layer_map_size(void) {
 // keymap that omits DEFINE_HOST_CALLBACKS links and behaves identically to today.
 __attribute__((weak)) host_callback_t* get_host_callbacks(void) { return NULL; }
 __attribute__((weak)) size_t           get_host_callbacks_size(void) { return 0; }
+
+/* F18 mod-tap-assist flush hook (§4.6 / MOD_TAP_ASSIST §5.1). Weak no-op
+ * default — the module ships no tap/hold behavior; a keymap opts in by
+ * defining notifier_on_mouse_activity() (reference: P1.M3.T1.S3). The 0x06
+ * dispatch sets mouse_hook_overridden=true BEFORE invoking the hook; this
+ * default clears it, so the reply ack reports whether a keymap override is
+ * linked (1) or the module default ran (0). kind is bitflags
+ * (NOTIFIER_MOUSE_WHEEL_V/_H/_BUTTON) forwarded VERBATIM — the default
+ * ignores it; reserved bits are legal (forward-compat). */
+static bool mouse_hook_overridden = false;
+__attribute__((weak)) void notifier_on_mouse_activity(uint8_t kind) {
+    (void)kind;                    /* default: no engine to flush here */
+    mouse_hook_overridden = false; /* proves the WEAK DEFAULT ran */
+}
 
 #define LAYER_UNSET 255
 uint8_t activated_layer = LAYER_UNSET;
@@ -725,9 +742,10 @@ static void send_typed_response(uint8_t cmd_id, const uint8_t *payload, uint8_t 
  * otherwise. This converts a truncated/garbled typed message into a safe no-op
  * reply instead of silently reading leftover bytes from a prior message.
  *
- * QUERY_INFO (0x01), QUERY_CALLBACK (0x02), SET_OS (0x03), and APPLY_HOST_CONTEXT
- * (0x05) are implemented here. The reserved 0x04 (VIA-coexist) and any unknown
- * id fall through to the default ([0x51][cmd_id] no payload) — a safe placeholder. */
+ * QUERY_INFO (0x01), QUERY_CALLBACK (0x02), SET_OS (0x03), APPLY_HOST_CONTEXT
+ * (0x05), and MOUSE_ACTIVITY (0x06, F18) are implemented here. The reserved
+ * 0x04 (VIA-coexist) and any unknown id fall through to the default
+ * ([0x51][cmd_id] no payload) — a safe placeholder. */
 static bool handle_typed_command(char *data, uint16_t len) {
     uint8_t cmd_id = (uint8_t)data[1];
 
@@ -740,7 +758,8 @@ static bool handle_typed_command(char *data, uint16_t len) {
             uint8_t payload[4];
             payload[0] = NOTIFY_PROTO_VER;   /* 2 = typed-command capable (firmware-owned, §4.6) */
             payload[1] = NOTIFY_FEATURE_APPLY_HOST_CONTEXT
-                       | (get_host_callbacks_size() > 0 ? NOTIFY_FEATURE_CALLBACK_REGISTRY : 0);
+                       | (get_host_callbacks_size() > 0 ? NOTIFY_FEATURE_CALLBACK_REGISTRY : 0)
+                       | NOTIFY_FEATURE_MOUSE_ACTIVITY;   /* F18: always — the dispatch exists even without a hook override */
             payload[2] = (uint8_t)get_host_callbacks_size();          /* 0 when no DEFINE_HOST_CALLBACKS */
             payload[3] = board_rules_present() ? 1 : 0;               /* single bit (§4.6) */
             send_typed_response(NOTIFY_CMD_QUERY_INFO, payload, 4);
@@ -833,6 +852,28 @@ static bool handle_typed_command(char *data, uint16_t len) {
 
             uint8_t payload[1] = { 0x01 };      /* ack = 1 (applied) */
             send_typed_response(NOTIFY_CMD_APPLY_HOST_CONTEXT, payload, 1);
+            break;
+        }
+        /* MOUSE_ACTIVITY (0x06) — F18 mod-tap-assist flush ping (§4.6 / F18 /
+         * MOD_TAP_ASSIST §5.1). args[0]=kind bitflags (NOTIFIER_MOUSE_WHEEL_V/_H/
+         * _BUTTON; reserved bits legal) forwarded VERBATIM — never validated, so
+         * future kinds need no firmware change. Invokes the weak hook; reply
+         * [0x51][0x06][ack]: 1 = a keymap override was invoked, 0 = the weak no-op
+         * default ran (no hook compiled in; host treats as no-op but MAY keep
+         * sending — feature bit 0x08 stays advertised). Flag-flip detection: set
+         * true, call, the default clears it (single-threaded ⇒ no race).
+         * Length guard (BUG-3): require len >= 3 (disc + cmd + kind). */
+        case NOTIFY_CMD_MOUSE_ACTIVITY: {
+            if (len < 3) {
+                send_typed_response(cmd_id, NULL, 0);
+                break;
+            }
+            uint8_t kind = (uint8_t)data[2];
+            mouse_hook_overridden = true;            /* assume override; default clears */
+            notifier_on_mouse_activity(kind);        /* kind VERBATIM (forward-compat) */
+            uint8_t payload[1];
+            payload[0] = mouse_hook_overridden ? 0x01 : 0x00;
+            send_typed_response(NOTIFY_CMD_MOUSE_ACTIVITY, payload, 1);
             break;
         }
         /* Default / unknown cmd_id (incl 0x04 reserved for VIA-coexist): reply with
